@@ -72,7 +72,27 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	username := i.Member.User.Username
+
+	// Build command parameters string
+	var params []string
+	if options := i.ApplicationCommandData().Options; len(options) > 0 {
+		for _, opt := range options {
+			switch opt.Type {
+			case discordgo.ApplicationCommandOptionSubCommand:
+				params = append(params, fmt.Sprintf("%s", opt.Name))
+				for _, subOpt := range opt.Options {
+					params = append(params, fmt.Sprintf("%s:%s", subOpt.Name, subOpt.StringValue()))
+				}
+			case discordgo.ApplicationCommandOptionString:
+				params = append(params, fmt.Sprintf("%s:%s", opt.Name, opt.StringValue()))
+			}
+		}
+	}
+
 	logMessage := fmt.Sprintf("[%s] %s executed /%s", timestamp, username, commandName)
+	if len(params) > 0 {
+		logMessage += fmt.Sprintf(" [%s]", strings.Join(params, ", "))
+	}
 	if len(details) > 0 {
 		logMessage += fmt.Sprintf(" (%s)", strings.Join(details, " "))
 	}

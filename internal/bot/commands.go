@@ -1,8 +1,10 @@
 package bot
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -122,6 +124,29 @@ var (
 						},
 					},
 				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "format",
+					Description: "Output format (CSV available for admins only)",
+					Required:    false,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{
+							Name:  "Text",
+							Value: "text",
+						},
+						{
+							Name:  "CSV",
+							Value: "csv",
+						},
+					},
+				},
+				{
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "username",
+					Description:  "Filter by username",
+					Required:     false,
+					Autocomplete: true,
+				},
 			},
 		},
 		{
@@ -179,6 +204,15 @@ var (
 )
 
 func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	switch i.ApplicationCommandData().Name {
+	case "checkin", "task":
+		b.handleTaskAutocomplete(s, i)
+	case "report":
+		b.handleUsernameAutocomplete(s, i)
+	}
+}
+
+func (b *Bot) handleTaskAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Get the user's tasks for autocomplete
 	user, err := b.getUserFromInteraction(s, i)
 	if err != nil {
@@ -277,6 +311,62 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 			Choices: choices,
 		},
 	})
+}
+
+func (b *Bot) handleUsernameAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Get all users who have any activity
+	users, err := b.db.GetAllUsers()
+	if err != nil {
+		log.Printf("Error getting users for autocomplete: %v", err)
+		return
+	}
+
+	log.Printf("Total users found: %d", len(users))
+
+	// Get the current input value
+	var focusedOption *discordgo.ApplicationCommandInteractionDataOption
+	for _, opt := range i.ApplicationCommandData().Options {
+		log.Printf("Checking option: %s, focused: %v", opt.Name, opt.Focused)
+		if opt.Focused && opt.Name == "username" {
+			focusedOption = opt
+			break
+		}
+	}
+
+	if focusedOption == nil {
+		log.Printf("No focused username option found in command. Options: %+v", i.ApplicationCommandData().Options)
+		return
+	}
+
+	input := strings.ToLower(focusedOption.StringValue())
+	log.Printf("Autocomplete input: %s", input)
+
+	// Filter and create choices
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, user := range users {
+		if strings.Contains(strings.ToLower(user.Username), input) {
+			choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+				Name:  user.Username,
+				Value: user.Username,
+			})
+			log.Printf("Added choice: %s", user.Username)
+		}
+		if len(choices) >= 25 { // Discord limit
+			break
+		}
+	}
+
+	log.Printf("Found %d matching users", len(choices))
+
+	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{
+			Choices: choices,
+		},
+	})
+	if err != nil {
+		log.Printf("Error responding to autocomplete: %v", err)
+	}
 }
 
 func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -537,6 +627,26 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 	logCommand(s, i, "report")
 
 	period := i.ApplicationCommandData().Options[0].StringValue()
+	format := "text"     // default format
+	filterUsername := "" // default to no filter
+
+	// Get format and username filter if provided
+	for _, opt := range i.ApplicationCommandData().Options {
+		switch opt.Name {
+		case "format":
+			format = opt.StringValue()
+		case "username":
+			filterUsername = opt.StringValue()
+		}
+	}
+
+	// Check if user is admin when requesting CSV
+	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
+	if format == "csv" && !isUserAdmin {
+		log.Printf("CSV access denied for user %s in guild %s", i.Member.User.ID, i.GuildID)
+		respondWithError(s, i, "CSV format is only available for administrators")
+		return
+	}
 
 	now := time.Now()
 	var startDate time.Time
@@ -597,8 +707,10 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		taskName string
 	}
 	type taskInfo struct {
-		duration time.Duration
-		ongoing  bool
+		duration  time.Duration
+		ongoing   bool
+		completed bool
+		lastSeen  time.Time // Track when we last saw this task
 	}
 	taskTimes := make(map[userTaskKey]*taskInfo)
 
@@ -634,41 +746,43 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 			username: user.Username,
 			taskName: ci.Task.Name,
 		}
+		endTime := *ci.CheckIn.EndTime
 		if info, exists := taskTimes[key]; exists {
 			info.duration += duration
+			// Update completion status only if this check-in is more recent
+			if endTime.After(info.lastSeen) {
+				info.completed = ci.Task.Completed
+				info.lastSeen = endTime
+			}
 		} else {
 			taskTimes[key] = &taskInfo{
-				duration: duration,
-				ongoing:  activeTasksByUser[key],
+				duration:  duration,
+				ongoing:   activeTasksByUser[key],
+				completed: ci.Task.Completed,
+				lastSeen:  endTime,
 			}
 		}
 	}
 
-	// Convert map to rows for the table
-	var response strings.Builder
-	response.WriteString(fmt.Sprintf("# Task history for %s\n\n", period))
-	response.WriteString("```\n")
-
-	// Write header
-	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n", "USER", "TASK", "TIME", "STATUS"))
-	response.WriteString(strings.Repeat("-", 75) + "\n")
-
 	// Group tasks by user
 	userGroups := make(map[string][]struct {
-		taskName string
-		duration time.Duration
-		ongoing  bool
+		taskName  string
+		duration  time.Duration
+		ongoing   bool
+		completed bool
 	})
 
 	for key, info := range taskTimes {
 		userGroups[key.username] = append(userGroups[key.username], struct {
-			taskName string
-			duration time.Duration
-			ongoing  bool
+			taskName  string
+			duration  time.Duration
+			ongoing   bool
+			completed bool
 		}{
-			taskName: key.taskName,
-			duration: info.duration,
-			ongoing:  info.ongoing,
+			taskName:  key.taskName,
+			duration:  info.duration,
+			ongoing:   info.ongoing,
+			completed: info.completed,
 		})
 	}
 
@@ -678,6 +792,94 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		usernames = append(usernames, username)
 	}
 	sort.Strings(usernames)
+
+	if format == "csv" {
+		// Create CSV content
+		var csvContent strings.Builder
+		csvContent.WriteString("User,Task,Duration,Duration_Dec,Status\n")
+
+		for _, username := range usernames {
+			tasks := userGroups[username]
+			sort.Slice(tasks, func(i, j int) bool {
+				return tasks[i].taskName < tasks[j].taskName
+			})
+
+			for _, task := range tasks {
+				status := "Checked out"
+				if task.ongoing {
+					status = "Active"
+				} else if task.completed {
+					status = "Completed"
+				}
+
+				// Calculate decimal duration in hours
+				durationDec := float64(task.duration) / float64(time.Hour)
+
+				// Escape fields that might contain commas
+				escapedTask := strings.ReplaceAll(task.taskName, "\"", "\"\"")
+				if strings.Contains(escapedTask, ",") {
+					escapedTask = "\"" + escapedTask + "\""
+				}
+
+				csvContent.WriteString(fmt.Sprintf("%s,%s,%s,%.2f,%s\n",
+					username,
+					escapedTask,
+					formatDuration(task.duration),
+					durationDec,
+					status))
+			}
+		}
+
+		// Create a temporary file for the CSV
+		tmpFile, err := os.CreateTemp("", "task_report_*.csv")
+		if err != nil {
+			respondWithError(s, i, "Error creating CSV file: "+err.Error())
+			return
+		}
+		defer os.Remove(tmpFile.Name())
+
+		if _, err := tmpFile.WriteString(csvContent.String()); err != nil {
+			respondWithError(s, i, "Error writing CSV file: "+err.Error())
+			return
+		}
+		tmpFile.Close()
+
+		// Send the file
+		file := &discordgo.File{
+			Name:        fmt.Sprintf("task_report_%s.csv", period),
+			ContentType: "text/csv",
+			Reader:      bytes.NewReader([]byte(csvContent.String())),
+		}
+
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Files: []*discordgo.File{file},
+			},
+		})
+		return
+	}
+
+	// Original text format response
+	var response strings.Builder
+	response.WriteString(fmt.Sprintf("# Task history for %s\n\n", period))
+	response.WriteString("```\n")
+
+	// Write header
+	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n", "USER", "TASK", "TIME", "STATUS"))
+	response.WriteString(strings.Repeat("-", 79) + "\n")
+
+	// Filter usernames if a specific username was requested
+	if filterUsername != "" {
+		filteredUsernames := []string{}
+		for _, username := range usernames {
+			if username == filterUsername {
+				filteredUsernames = append(filteredUsernames, username)
+				break
+			}
+		}
+		usernames = filteredUsernames
+	}
 
 	// Format each user's tasks
 	for _, username := range usernames {
@@ -689,9 +891,11 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		})
 
 		for _, task := range tasks {
-			status := "Completed"
+			status := "Checked out"
 			if task.ongoing {
 				status = "🟢 Active"
+			} else if task.completed {
+				status = "Completed"
 			}
 			response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n",
 				truncateString(username, 20),
@@ -708,19 +912,86 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 // Helper function to check if a user is an admin
 func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
+	// If this is a DM channel (no guild), check if the user is a bot owner
+	if guildID == "" {
+		// In DMs, we consider the user an admin if they have admin permissions in any mutual guild
+		guilds, err := s.UserGuilds(100, "", "")
+		if err != nil {
+			log.Printf("Error getting user guilds: %v", err)
+			return false
+		}
+
+		for _, guild := range guilds {
+			member, err := s.GuildMember(guild.ID, userID)
+			if err != nil {
+				continue
+			}
+
+			// Get guild to check roles
+			g, err := s.Guild(guild.ID)
+			if err != nil {
+				continue
+			}
+
+			// Check if user is the guild owner
+			if g.OwnerID == userID {
+				log.Printf("User %s is the owner of guild %s", userID, guild.ID)
+				return true
+			}
+
+			// Check roles for admin permissions
+			for _, roleID := range member.Roles {
+				for _, role := range g.Roles {
+					if role.ID == roleID {
+						if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
+							return true
+						}
+						break
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	// For guild channels, check the guild roles
 	member, err := s.GuildMember(guildID, userID)
 	if err != nil {
+		log.Printf("Error getting guild member: %v", err)
 		return false
 	}
 
-	// Get user permissions
-	perms, err := s.UserChannelPermissions(member.User.ID, member.GuildID)
+	// Get guild to check roles
+	guild, err := s.Guild(guildID)
 	if err != nil {
+		log.Printf("Error getting guild: %v", err)
 		return false
 	}
 
-	// Check if user has admin or manage server permissions
-	return perms&discordgo.PermissionAdministrator != 0 || perms&discordgo.PermissionManageServer != 0
+	// First check if user is the guild owner
+	if guild.OwnerID == userID {
+		log.Printf("User %s is the owner of guild %s", userID, guildID)
+		return true
+	}
+
+	// Check each role the user has
+	for _, roleID := range member.Roles {
+		for _, role := range guild.Roles {
+			if role.ID == roleID {
+				// Log role details for debugging
+				log.Printf("Checking role %s (ID: %s) with permissions: %d", role.Name, role.ID, role.Permissions)
+
+				if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
+					log.Printf("User %s is admin via role %s", userID, role.Name)
+					return true
+				}
+				break
+			}
+		}
+	}
+
+	log.Printf("User %s is not an admin in guild %s", userID, guildID)
+	return false
 }
 
 func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {

@@ -314,7 +314,7 @@ func (db *DB) UpdateUserTimezone(userID uuid.UUID, timezone string) error {
 // GetCheckInByID retrieves a check-in by its ID
 func (db *DB) GetCheckInByID(checkInID uuid.UUID) (*models.CheckIn, error) {
 	query := `
-		SELECT id, user_id, task_id, start_time, end_time
+		SELECT id, user_id, task_id, start_time, end_time, active
 		FROM check_ins
 		WHERE id = $1`
 
@@ -326,6 +326,7 @@ func (db *DB) GetCheckInByID(checkInID uuid.UUID) (*models.CheckIn, error) {
 		&checkIn.TaskID,
 		&checkIn.StartTime,
 		&endTime,
+		&checkIn.Active,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -379,7 +380,7 @@ func (db *DB) GetAllTaskHistory(startDate, endDate time.Time) ([]*models.CheckIn
 	query := `
 		SELECT 
 			c.id, c.user_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description
+			t.name, t.description, t.completed
 		FROM check_ins c
 		JOIN tasks t ON c.task_id = t.id
 		WHERE c.start_time >= $1 
@@ -408,6 +409,7 @@ func (db *DB) GetAllTaskHistory(startDate, endDate time.Time) ([]*models.CheckIn
 			&endTime,
 			&ci.Task.Name,
 			&ci.Task.Description,
+			&ci.Task.Completed,
 		)
 		if err != nil {
 			return nil, err
@@ -461,4 +463,39 @@ func (db *DB) UpdateTaskStatus(taskID uuid.UUID, completed bool) error {
 	}
 
 	return nil
+}
+
+// GetAllUsers retrieves all users from the database
+func (db *DB) GetAllUsers() ([]*models.User, error) {
+	query := `
+		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
+		FROM users u
+		LEFT JOIN check_ins c ON u.id = c.user_id
+		ORDER BY 
+			-- Show users with activity first, then others
+			CASE WHEN c.id IS NOT NULL THEN 0 ELSE 1 END,
+			u.username ASC`
+
+	rows, err := db.Query(context.Background(), query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		user := &models.User{}
+		err := rows.Scan(
+			&user.ID,
+			&user.DiscordID,
+			&user.Username,
+			&user.Timezone,
+			&user.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
 }
