@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     name VARCHAR(128) NOT NULL,
     description TEXT,
     tags TEXT[],
+    global BOOLEAN NOT NULL DEFAULT false,
     completed BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS check_ins (
     task_id UUID NOT NULL REFERENCES tasks(id),
     start_time TIMESTAMP NOT NULL,
     end_time TIMESTAMP,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
     CONSTRAINT check_end_time_after_start CHECK (end_time IS NULL OR end_time > start_time)
 );
 

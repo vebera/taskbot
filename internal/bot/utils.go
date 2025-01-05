@@ -103,3 +103,46 @@ func sendServerLog(s *discordgo.Session, channelID string, message string) {
 		log.Printf("Error sending log to Discord: %v", err)
 	}
 }
+
+// formatTable creates a Discord-friendly table with fixed-width columns
+func formatTable(headers []string, rows [][]string) string {
+	// Find the maximum width for each column
+	widths := make([]int, len(headers))
+	for i, header := range headers {
+		widths[i] = len(header)
+	}
+
+	for _, row := range rows {
+		for i, cell := range row {
+			if len(cell) > widths[i] {
+				widths[i] = len(cell)
+			}
+		}
+	}
+
+	var result strings.Builder
+
+	// Write headers
+	result.WriteString("```\n")
+	for i, header := range headers {
+		result.WriteString(fmt.Sprintf("%-*s", widths[i]+2, header))
+	}
+	result.WriteString("\n")
+
+	// Write separator
+	for _, width := range widths {
+		result.WriteString(strings.Repeat("-", width+2))
+	}
+	result.WriteString("\n")
+
+	// Write rows
+	for _, row := range rows {
+		for i, cell := range row {
+			result.WriteString(fmt.Sprintf("%-*s", widths[i]+2, cell))
+		}
+		result.WriteString("\n")
+	}
+	result.WriteString("```")
+
+	return result.String()
+}

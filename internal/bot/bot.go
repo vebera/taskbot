@@ -18,6 +18,8 @@ type Bot struct {
 	session    *discordgo.Session
 	commands   []*discordgo.ApplicationCommand
 	shutdownCh chan struct{}
+	isShutdown bool
+	mu         sync.Mutex
 	wg         sync.WaitGroup
 }
 
@@ -36,6 +38,7 @@ func New(discordConfig struct {
 		session:    session,
 		config:     &config.Config{Discord: discordConfig},
 		shutdownCh: make(chan struct{}),
+		isShutdown: false,
 	}, nil
 }
 
@@ -54,21 +57,30 @@ func (b *Bot) Start(ctx context.Context) error {
 	b.commands = registeredCommands
 	log.Println("Commands registered successfully")
 
+	// Register command handlers
+	commandHandlers := map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
+		"timezone":   b.handleTimezone,
+		"checkin":    b.handleCheckin,
+		"checkout":   b.handleCheckout,
+		"status":     b.handleStatus,
+		"report":     b.handleReport,
+		"task":       b.handleTask,
+		"globaltask": b.handleGlobalTask,
+	}
+
 	b.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		b.wg.Add(1)
 		defer b.wg.Done()
 
-		switch i.ApplicationCommandData().Name {
-		case "timezone":
-			b.handleTimezone(s, i)
-		case "checkin":
-			b.handleCheckin(s, i)
-		case "checkout":
-			b.handleCheckout(s, i)
-		case "status":
-			b.handleStatus(s, i)
-		case "report":
-			b.handleReport(s, i)
+		switch i.Type {
+		case discordgo.InteractionApplicationCommand:
+			if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
+				h(s, i)
+			}
+		case discordgo.InteractionApplicationCommandAutocomplete:
+			if i.ApplicationCommandData().Name == "checkin" || i.ApplicationCommandData().Name == "task" {
+				b.handleAutocomplete(s, i)
+			}
 		}
 	})
 
@@ -87,8 +99,15 @@ func (b *Bot) Start(ctx context.Context) error {
 func (b *Bot) Shutdown() error {
 	log.Println("Initiating graceful shutdown...")
 
-	// Signal shutdown to all goroutines
+	// Ensure we only close the channel once
+	b.mu.Lock()
+	if b.isShutdown {
+		b.mu.Unlock()
+		return nil
+	}
+	b.isShutdown = true
 	close(b.shutdownCh)
+	b.mu.Unlock()
 
 	// Wait for all handlers to complete
 	log.Println("Waiting for active handlers to complete...")

@@ -2,6 +2,8 @@ package bot
 
 import (
 	"fmt"
+	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,16 +32,37 @@ var (
 			Description: "Start working on a task",
 			Options: []*discordgo.ApplicationCommandOption{
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "task",
-					Description: "Task name",
-					Required:    true,
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "existing",
+					Description: "Check in to an existing task",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:         discordgo.ApplicationCommandOptionString,
+							Name:         "task",
+							Description:  "Select a task",
+							Required:     true,
+							Autocomplete: true,
+						},
+					},
 				},
 				{
-					Type:        discordgo.ApplicationCommandOptionString,
-					Name:        "description",
-					Description: "Task description",
-					Required:    false,
+					Type:        discordgo.ApplicationCommandOptionSubCommand,
+					Name:        "new",
+					Description: "Create and check in to a new task",
+					Options: []*discordgo.ApplicationCommandOption{
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "name",
+							Description: "Task name",
+							Required:    true,
+						},
+						{
+							Type:        discordgo.ApplicationCommandOptionString,
+							Name:        "description",
+							Description: "Task description",
+							Required:    false,
+						},
+					},
 				},
 			},
 		},
@@ -58,7 +81,7 @@ var (
 				{
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "period",
-					Description: "Time period (today, week, month)",
+					Description: "Time period",
 					Required:    true,
 					Choices: []*discordgo.ApplicationCommandOptionChoice{
 						{
@@ -73,27 +96,241 @@ var (
 							Name:  "This Month",
 							Value: "month",
 						},
+						{
+							Name:  "Last Month",
+							Value: "last_month",
+						},
+						{
+							Name:  "2 Months Ago",
+							Value: "month_2",
+						},
+						{
+							Name:  "3 Months Ago",
+							Value: "month_3",
+						},
+						{
+							Name:  "4 Months Ago",
+							Value: "month_4",
+						},
+						{
+							Name:  "5 Months Ago",
+							Value: "month_5",
+						},
+						{
+							Name:  "6 Months Ago",
+							Value: "month_6",
+						},
 					},
 				},
 			},
 		},
+		{
+			Name:        "task",
+			Description: "Update task status",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "task",
+					Description:  "Select a task",
+					Required:     true,
+					Autocomplete: true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "status",
+					Description: "New task status",
+					Required:    true,
+					Choices: []*discordgo.ApplicationCommandOptionChoice{
+						{
+							Name:  "Open",
+							Value: "open",
+						},
+						{
+							Name:  "Completed",
+							Value: "completed",
+						},
+					},
+				},
+			},
+		},
+		{
+			Name:                     "globaltask",
+			Description:              "Create a global task visible to everyone (admin only)",
+			DefaultMemberPermissions: &adminPermission,
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "name",
+					Description: "Task name",
+					Required:    true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "description",
+					Description: "Task description",
+					Required:    false,
+				},
+			},
+		},
 	}
+
+	// Permission for admin commands (Manage Server permission)
+	adminPermission = int64(discordgo.PermissionManageServer)
 )
 
-func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	options := i.ApplicationCommandData().Options
-	taskName := options[0].StringValue()
-	logCommand(s, i, "checkin", fmt.Sprintf("task: %s", taskName))
-
-	var description string
-	if len(options) > 1 {
-		description = options[1].StringValue()
+func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Get the user's tasks for autocomplete
+	user, err := b.getUserFromInteraction(s, i)
+	if err != nil {
+		return
 	}
+
+	// Check if user is admin
+	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
+
+	// Get active check-in to filter out active task
+	var activeTaskID *uuid.UUID
+	if i.ApplicationCommandData().Name == "checkin" {
+		activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+		if err != nil {
+			log.Printf("Error getting active check-in: %v", err)
+			return
+		}
+		if activeCheckIn != nil {
+			activeTaskID = &activeCheckIn.TaskID
+		}
+	}
+
+	tasks, err := b.db.GetUserTasks(user.ID)
+	if err != nil {
+		log.Printf("Error getting tasks for autocomplete: %v", err)
+		return
+	}
+
+	// Get the current input value
+	var focusedOption *discordgo.ApplicationCommandInteractionDataOption
+	if i.ApplicationCommandData().Name == "checkin" {
+		// For checkin command, the task option is nested under the "existing" subcommand
+		if len(i.ApplicationCommandData().Options) > 0 && len(i.ApplicationCommandData().Options[0].Options) > 0 {
+			focusedOption = i.ApplicationCommandData().Options[0].Options[0]
+		}
+	} else {
+		// For task command, the task option is directly in the options
+		if len(i.ApplicationCommandData().Options) > 0 {
+			focusedOption = i.ApplicationCommandData().Options[0]
+		}
+	}
+
+	if focusedOption == nil {
+		return
+	}
+
+	input := strings.ToLower(focusedOption.StringValue())
+
+	// Filter and create choices
+	var choices []*discordgo.ApplicationCommandOptionChoice
+	for _, task := range tasks {
+		// For checkin command:
+		// - Skip completed tasks
+		// - Skip currently active task
+		if i.ApplicationCommandData().Name == "checkin" {
+			if task.Completed {
+				continue
+			}
+			if activeTaskID != nil && task.ID == *activeTaskID {
+				continue
+			}
+		}
+
+		// For task command, show all tasks that user owns or global tasks if admin
+		if i.ApplicationCommandData().Name == "task" {
+			if !isUserAdmin && task.Global && task.UserID != user.ID {
+				continue // Skip global tasks for non-admins unless they created them
+			}
+		}
+
+		if strings.Contains(strings.ToLower(task.Name), input) {
+			// Add task status to the name for /task command
+			displayName := task.Name
+			if i.ApplicationCommandData().Name == "task" {
+				if task.Global {
+					displayName = fmt.Sprintf("%s [Global]", task.Name)
+				}
+				if task.Completed {
+					displayName = fmt.Sprintf("%s (Completed)", displayName)
+				}
+			}
+
+			choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
+				Name:  displayName,
+				Value: task.ID.String(),
+			})
+		}
+		if len(choices) >= 25 { // Discord limit
+			break
+		}
+	}
+
+	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
+		Data: &discordgo.InteractionResponseData{
+			Choices: choices,
+		},
+	})
+}
+
+func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	subcommand := i.ApplicationCommandData().Options[0]
+	options := subcommand.Options
+
+	var task *models.Task
+	var err error
 
 	user, err := b.getUserFromInteraction(s, i)
 	if err != nil {
 		return
 	}
+
+	switch subcommand.Name {
+	case "existing":
+		taskID, err := uuid.Parse(options[0].StringValue())
+		if err != nil {
+			respondWithError(s, i, "Invalid task ID")
+			return
+		}
+		task, err = b.db.GetTaskByID(taskID)
+		if err != nil {
+			respondWithError(s, i, "Error getting task: "+err.Error())
+			return
+		}
+		if task == nil {
+			respondWithError(s, i, "Task not found")
+			return
+		}
+
+	case "new":
+		taskName := options[0].StringValue()
+		var description string
+		if len(options) > 1 {
+			description = options[1].StringValue()
+		}
+
+		task = &models.Task{
+			ID:          uuid.New(),
+			UserID:      user.ID,
+			Name:        taskName,
+			Description: description,
+			CreatedAt:   time.Now(),
+		}
+
+		if err := b.db.CreateTask(task); err != nil {
+			logError(s, i.ChannelID, "CreateTask", err.Error())
+			respondWithError(s, i, "Error creating task: "+err.Error())
+			return
+		}
+	}
+
+	logCommand(s, i, "checkin", fmt.Sprintf("task: %s", task.Name))
 
 	// Check for active check-in
 	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
@@ -112,22 +349,6 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 	}
 
-	// Create or get task
-	task := &models.Task{
-		ID:          uuid.New(),
-		UserID:      user.ID,
-		Name:        taskName,
-		Description: description,
-		CreatedAt:   time.Now(),
-	}
-
-	// Save task to database
-	if err := b.db.CreateTask(task); err != nil {
-		logError(s, i.ChannelID, "CreateTask", err.Error())
-		respondWithError(s, i, "Error creating task: "+err.Error())
-		return
-	}
-
 	// Create check-in record
 	checkIn := &models.CheckIn{
 		ID:        uuid.New(),
@@ -142,7 +363,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	respondWithSuccess(s, i, fmt.Sprintf("Started working on task: %s", taskName))
+	respondWithSuccess(s, i, fmt.Sprintf("Started working on task: %s", task.Name))
 }
 
 func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -194,59 +415,136 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "status")
 
+	// Get all active check-ins
 	activeCheckIns, err := b.db.GetAllActiveCheckIns()
 	if err != nil {
 		respondWithError(s, i, "Error retrieving active check-ins: "+err.Error())
 		return
 	}
 
-	if len(activeCheckIns) == 0 {
-		respondWithSuccess(s, i, "No active tasks at the moment")
+	// Get today's start time in UTC
+	now := time.Now().UTC()
+	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Create a map to store user status information
+	type UserStatus struct {
+		username     string
+		isActive     bool
+		currentTask  string
+		taskDuration time.Duration
+		totalToday   time.Duration
+	}
+	userStatuses := make(map[string]*UserStatus)
+
+	// Get all users who have any activity today
+	todayHistory, err := b.db.GetAllTaskHistory(todayStart, now)
+	if err != nil {
+		respondWithError(s, i, "Error retrieving today's history: "+err.Error())
 		return
 	}
 
-	var response strings.Builder
-	response.WriteString("Current active tasks:\n\n")
-
-	for _, ci := range activeCheckIns {
-		user, err := s.User(ci.CheckIn.UserID.String())
+	// Calculate total time for today for each user
+	for _, ci := range todayHistory {
+		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
 		if err != nil {
 			continue
 		}
 
-		duration := time.Since(ci.CheckIn.StartTime)
-		response.WriteString(fmt.Sprintf("**%s** is working on: %s\n",
-			user.Username,
-			ci.Task.Name,
-		))
-		response.WriteString(fmt.Sprintf("Duration: %s\n\n", formatDuration(duration)))
+		if _, exists := userStatuses[user.ID.String()]; !exists {
+			userStatuses[user.ID.String()] = &UserStatus{
+				username: user.Username,
+			}
+		}
+
+		duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
+		userStatuses[user.ID.String()].totalToday += duration
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: response.String(),
-		},
+	// Update active users' current tasks and status
+	for _, ci := range activeCheckIns {
+		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
+		if err != nil {
+			continue
+		}
+
+		if _, exists := userStatuses[user.ID.String()]; !exists {
+			userStatuses[user.ID.String()] = &UserStatus{
+				username: user.Username,
+			}
+		}
+
+		status := userStatuses[user.ID.String()]
+		status.isActive = true
+		status.currentTask = ci.Task.Name
+		status.taskDuration = time.Since(ci.CheckIn.StartTime)
+	}
+
+	// Convert to slice for sorting
+	var statusList []*UserStatus
+	for _, status := range userStatuses {
+		statusList = append(statusList, status)
+	}
+
+	// Sort by active status (active first) and then by username
+	sort.Slice(statusList, func(i, j int) bool {
+		if statusList[i].isActive != statusList[j].isActive {
+			return statusList[i].isActive
+		}
+		return statusList[i].username < statusList[j].username
 	})
+
+	// Format the response
+	var response strings.Builder
+	response.WriteString("```\n")
+
+	// Write header
+	response.WriteString(fmt.Sprintf("%-20s %-10s %-15s %-30s %-15s\n",
+		"USER", "STATUS", "TODAY TOTAL", "CURRENT TASK", "TIME ELAPSED"))
+	response.WriteString(strings.Repeat("-", 95) + "\n")
+
+	// Write user statuses
+	for _, status := range statusList {
+		currentTask := "N/A"
+		taskDuration := ""
+		userStatus := "Offline"
+
+		if status.isActive {
+			currentTask = status.currentTask
+			taskDuration = formatDuration(status.taskDuration)
+			userStatus = "🟢 Online"
+		}
+
+		response.WriteString(fmt.Sprintf("%-20s %-10s %-15s %-30s %-15s\n",
+			truncateString(status.username, 20),
+			userStatus,
+			formatDuration(status.totalToday),
+			truncateString(currentTask, 30),
+			taskDuration,
+		))
+	}
+
+	response.WriteString("```")
+
+	if len(statusList) == 0 {
+		respondWithSuccess(s, i, "No activity recorded today")
+		return
+	}
+
+	respondWithSuccess(s, i, response.String())
 }
 
 func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "report")
-
-	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
-		return
-	}
 
 	period := i.ApplicationCommandData().Options[0].StringValue()
 
 	now := time.Now()
 	var startDate time.Time
 
-	// Use user's timezone for date calculations
-	loc, err := time.LoadLocation(user.Timezone)
+	// Use a default timezone or retrieve from interaction
+	loc, err := time.LoadLocation("UTC") // Default to UTC
 	if err != nil {
-		respondWithError(s, i, "Error loading timezone: "+err.Error())
+		respondWithError(s, i, "Error loading default timezone: "+err.Error())
 		return
 	}
 
@@ -258,12 +556,31 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		startDate = now.AddDate(0, 0, -7)
 	case "month":
 		startDate = now.AddDate(0, -1, 0)
+	case "last_month":
+		startDate = time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).Add(-time.Second)
+	case "month_2":
+		startDate = time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, loc).Add(-time.Second)
+	case "month_3":
+		startDate = time.Date(now.Year(), now.Month()-3, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, loc).Add(-time.Second)
+	case "month_4":
+		startDate = time.Date(now.Year(), now.Month()-4, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month()-3, 1, 0, 0, 0, 0, loc).Add(-time.Second)
+	case "month_5":
+		startDate = time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month()-4, 1, 0, 0, 0, 0, loc).Add(-time.Second)
+	case "month_6":
+		startDate = time.Date(now.Year(), now.Month()-6, 1, 0, 0, 0, 0, loc)
+		now = time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, loc).Add(-time.Second)
 	default:
 		respondWithError(s, i, "Invalid time period")
 		return
 	}
 
-	history, err := b.db.GetTaskHistory(user.ID, startDate, now)
+	// Get all users' history
+	history, err := b.db.GetAllTaskHistory(startDate, now)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving task history: "+err.Error())
 		return
@@ -274,22 +591,212 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	var response strings.Builder
-	response.WriteString(fmt.Sprintf("Task history for %s:\n\n", period))
+	// Create a map to store user-task combinations and their durations
+	type userTaskKey struct {
+		username string
+		taskName string
+	}
+	type taskInfo struct {
+		duration time.Duration
+		ongoing  bool
+	}
+	taskTimes := make(map[userTaskKey]*taskInfo)
 
-	var totalDuration time.Duration
-	for _, ci := range history {
-		duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
-		totalDuration += duration
-
-		response.WriteString(fmt.Sprintf("**%s**\n", ci.Task.Name))
-		response.WriteString(fmt.Sprintf("Duration: %s\n", formatDuration(duration)))
-		response.WriteString(fmt.Sprintf("Started: %s\n\n", ci.CheckIn.StartTime.Format("2006-01-02 15:04:05")))
+	// First, get all active check-ins to mark ongoing tasks
+	activeCheckIns, err := b.db.GetAllActiveCheckIns()
+	if err != nil {
+		logError(s, i.ChannelID, "GetAllActiveCheckIns", err.Error())
+		return
 	}
 
-	response.WriteString(fmt.Sprintf("Total time: %s", formatDuration(totalDuration)))
+	// Create a map of active tasks
+	activeTasksByUser := make(map[userTaskKey]bool)
+	for _, ci := range activeCheckIns {
+		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
+		if err != nil {
+			continue
+		}
+		activeTasksByUser[userTaskKey{
+			username: user.Username,
+			taskName: ci.Task.Name,
+		}] = true
+	}
 
+	for _, ci := range history {
+		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
+		if err != nil {
+			logError(s, i.ChannelID, "GetUserByID", err.Error())
+			continue
+		}
+
+		duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
+		key := userTaskKey{
+			username: user.Username,
+			taskName: ci.Task.Name,
+		}
+		if info, exists := taskTimes[key]; exists {
+			info.duration += duration
+		} else {
+			taskTimes[key] = &taskInfo{
+				duration: duration,
+				ongoing:  activeTasksByUser[key],
+			}
+		}
+	}
+
+	// Convert map to rows for the table
+	var response strings.Builder
+	response.WriteString(fmt.Sprintf("# Task history for %s\n\n", period))
+	response.WriteString("```\n")
+
+	// Write header
+	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n", "USER", "TASK", "TIME", "STATUS"))
+	response.WriteString(strings.Repeat("-", 75) + "\n")
+
+	// Group tasks by user
+	userGroups := make(map[string][]struct {
+		taskName string
+		duration time.Duration
+		ongoing  bool
+	})
+
+	for key, info := range taskTimes {
+		userGroups[key.username] = append(userGroups[key.username], struct {
+			taskName string
+			duration time.Duration
+			ongoing  bool
+		}{
+			taskName: key.taskName,
+			duration: info.duration,
+			ongoing:  info.ongoing,
+		})
+	}
+
+	// Get usernames and sort them
+	var usernames []string
+	for username := range userGroups {
+		usernames = append(usernames, username)
+	}
+	sort.Strings(usernames)
+
+	// Format each user's tasks
+	for _, username := range usernames {
+		tasks := userGroups[username]
+
+		// Sort tasks by name
+		sort.Slice(tasks, func(i, j int) bool {
+			return tasks[i].taskName < tasks[j].taskName
+		})
+
+		for _, task := range tasks {
+			status := "Completed"
+			if task.ongoing {
+				status = "🟢 Active"
+			}
+			response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n",
+				truncateString(username, 20),
+				truncateString(task.taskName, 30),
+				formatDuration(task.duration),
+				status,
+			))
+		}
+	}
+
+	response.WriteString("```")
 	respondWithSuccess(s, i, response.String())
+}
+
+// Helper function to check if a user is an admin
+func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
+	member, err := s.GuildMember(guildID, userID)
+	if err != nil {
+		return false
+	}
+
+	// Get user permissions
+	perms, err := s.UserChannelPermissions(member.User.ID, member.GuildID)
+	if err != nil {
+		return false
+	}
+
+	// Check if user has admin or manage server permissions
+	return perms&discordgo.PermissionAdministrator != 0 || perms&discordgo.PermissionManageServer != 0
+}
+
+func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+	taskID, err := uuid.Parse(options[0].StringValue())
+	if err != nil {
+		respondWithError(s, i, "Invalid task ID")
+		return
+	}
+
+	newStatus := options[1].StringValue()
+	completed := newStatus == "completed"
+
+	// Get the user to verify ownership
+	user, err := b.getUserFromInteraction(s, i)
+	if err != nil {
+		return
+	}
+
+	// Get the task
+	task, err := b.db.GetTaskByID(taskID)
+	if err != nil {
+		respondWithError(s, i, "Error getting task: "+err.Error())
+		return
+	}
+	if task == nil {
+		respondWithError(s, i, "Task not found")
+		return
+	}
+
+	logCommand(s, i, "task", fmt.Sprintf("task: %s, status: %s", task.Name, newStatus))
+
+	// Check if user is admin or task owner
+	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
+	if !isUserAdmin && task.UserID != user.ID {
+		respondWithError(s, i, "You can only update your own tasks")
+		return
+	}
+
+	// Check if task is currently active
+	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+	if err != nil {
+		respondWithError(s, i, "Error checking active tasks: "+err.Error())
+		return
+	}
+
+	if activeCheckIn != nil && activeCheckIn.TaskID == taskID {
+		respondWithError(s, i, "Cannot update status of an active task. Please checkout first.")
+		return
+	}
+
+	// Update task status
+	if err := b.db.UpdateTaskStatus(taskID, completed); err != nil {
+		respondWithError(s, i, "Error updating task status: "+err.Error())
+		return
+	}
+
+	statusText := "open"
+	if completed {
+		statusText = "completed"
+	}
+
+	// Add admin action note to the message if applicable
+	message := fmt.Sprintf("Task '%s' marked as %s", task.Name, statusText)
+	if isUserAdmin && task.UserID != user.ID {
+		message += " (admin action)"
+	}
+	respondWithSuccess(s, i, message)
+}
+
+// Helper function to truncate strings that are too long
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s + strings.Repeat(" ", maxLen-len(s))
+	}
+	return s[:maxLen-3] + "..."
 }
 
 func (b *Bot) handleTimezone(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -321,4 +828,39 @@ func (b *Bot) handleTimezone(s *discordgo.Session, i *discordgo.InteractionCreat
 			Content: fmt.Sprintf("Timezone updated to %s", timezone),
 		},
 	})
+}
+
+func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+	taskName := options[0].StringValue()
+	var description string
+	if len(options) > 1 {
+		description = options[1].StringValue()
+	}
+
+	// Get the admin user
+	user, err := b.getUserFromInteraction(s, i)
+	if err != nil {
+		return
+	}
+
+	// Create the global task
+	task := &models.Task{
+		ID:          uuid.New(),
+		UserID:      user.ID, // Store admin as creator
+		Name:        taskName,
+		Description: description,
+		Global:      true,
+		CreatedAt:   time.Now(),
+	}
+
+	logCommand(s, i, "globaltask", fmt.Sprintf("name: %s", taskName))
+
+	if err := b.db.CreateTask(task); err != nil {
+		logError(s, i.ChannelID, "CreateTask", err.Error())
+		respondWithError(s, i, "Error creating global task: "+err.Error())
+		return
+	}
+
+	respondWithSuccess(s, i, fmt.Sprintf("Created global task: %s", task.Name))
 }

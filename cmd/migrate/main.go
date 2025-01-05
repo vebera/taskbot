@@ -40,14 +40,22 @@ func main() {
 	defer pool.Close()
 
 	// Read and execute migration file
-	migration, err := os.ReadFile("migrations/001_initial_schema.sql")
-	if err != nil {
-		log.Fatalf("Error reading migration file: %v", err)
+	migrations := []string{
+		"migrations/001_initial_schema.sql",
+		"migrations/002_add_active_status.sql",
 	}
 
-	_, err = pool.Exec(context.Background(), string(migration))
-	if err != nil {
-		log.Fatalf("Error executing migration: %v", err)
+	for _, migrationFile := range migrations {
+		migration, err := os.ReadFile(migrationFile)
+		if err != nil {
+			log.Fatalf("Error reading migration file %s: %v", migrationFile, err)
+		}
+
+		_, err = pool.Exec(context.Background(), string(migration))
+		if err != nil {
+			log.Fatalf("Error executing migration %s: %v", migrationFile, err)
+		}
+		log.Printf("Successfully applied migration: %s", migrationFile)
 	}
 
 	log.Println("Migration completed successfully")
