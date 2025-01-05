@@ -17,6 +17,7 @@ type User struct {
 type Task struct {
 	ID          uuid.UUID
 	UserID      uuid.UUID
+	ServerID    string
 	Name        string
 	Description string
 	Tags        []string
@@ -29,6 +30,7 @@ type Task struct {
 type CheckIn struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
+	ServerID  string
 	TaskID    uuid.UUID
 	StartTime time.Time
 	EndTime   *time.Time
@@ -41,11 +43,11 @@ type CheckInWithTask struct {
 }
 
 type ServerSettings struct {
-	ID              uuid.UUID `db:"id"`
-	ServerID        string    `db:"server_id"`
-	InactivityLimit int       `db:"inactivity_limit"`
-	PingTimeout     int       `db:"ping_timeout"`
-	CreatedAt       time.Time `db:"created_at"`
+	ID              uuid.UUID
+	ServerID        string
+	InactivityLimit int
+	PingTimeout     int
+	CreatedAt       time.Time
 }
 
 // Add other models here if needed

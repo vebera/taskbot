@@ -225,7 +225,7 @@ func (b *Bot) handleTaskAutocomplete(s *discordgo.Session, i *discordgo.Interact
 	// Get active check-in to filter out active task
 	var activeTaskID *uuid.UUID
 	if i.ApplicationCommandData().Name == "checkin" {
-		activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+		activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
 		if err != nil {
 			log.Printf("Error getting active check-in: %v", err)
 			return
@@ -235,7 +235,7 @@ func (b *Bot) handleTaskAutocomplete(s *discordgo.Session, i *discordgo.Interact
 		}
 	}
 
-	tasks, err := b.db.GetUserTasks(user.ID)
+	tasks, err := b.db.GetUserTasks(user.ID, i.GuildID)
 	if err != nil {
 		log.Printf("Error getting tasks for autocomplete: %v", err)
 		return
@@ -401,6 +401,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		task = &models.Task{
 			ID:          uuid.New(),
 			UserID:      user.ID,
+			ServerID:    i.GuildID,
 			Name:        taskName,
 			Description: description,
 			CreatedAt:   time.Now(),
@@ -416,7 +417,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 	logCommand(s, i, "checkin", fmt.Sprintf("task: %s", task.Name))
 
 	// Check for active check-in
-	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
 	if err != nil {
 		logError(s, i.ChannelID, "GetActiveCheckIn", err.Error())
 		respondWithError(s, i, "Error checking active tasks: "+err.Error())
@@ -436,6 +437,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 	checkIn := &models.CheckIn{
 		ID:        uuid.New(),
 		UserID:    user.ID,
+		ServerID:  i.GuildID,
 		TaskID:    task.ID,
 		StartTime: time.Now(),
 	}
@@ -458,7 +460,7 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 	}
 
 	// Get active check-in
-	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
 	if err != nil {
 		logError(s, i.ChannelID, "GetActiveCheckIn", err.Error())
 		respondWithError(s, i, "Error checking active tasks: "+err.Error())
@@ -498,8 +500,8 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "status")
 
-	// Get all active check-ins
-	activeCheckIns, err := b.db.GetAllActiveCheckIns()
+	// Get all active check-ins for this server
+	activeCheckIns, err := b.db.GetAllActiveCheckIns(i.GuildID)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving active check-ins: "+err.Error())
 		return
@@ -519,8 +521,8 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 	}
 	userStatuses := make(map[string]*UserStatus)
 
-	// Get all users who have any activity today
-	todayHistory, err := b.db.GetAllTaskHistory(todayStart, now)
+	// Get all task history for today for this server
+	todayHistory, err := b.db.GetAllTaskHistory(i.GuildID, todayStart, now)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving today's history: "+err.Error())
 		return
@@ -682,8 +684,8 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	// Get all users' history
-	history, err := b.db.GetAllTaskHistory(startDate, now)
+	// Get all users' history for this server
+	history, err := b.db.GetAllTaskHistory(i.GuildID, startDate, now)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving task history: "+err.Error())
 		return
@@ -708,7 +710,7 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 	taskTimes := make(map[userTaskKey]*taskInfo)
 
 	// First, get all active check-ins to mark ongoing tasks
-	activeCheckIns, err := b.db.GetAllActiveCheckIns()
+	activeCheckIns, err := b.db.GetAllActiveCheckIns(i.GuildID)
 	if err != nil {
 		logError(s, i.ChannelID, "GetAllActiveCheckIns", err.Error())
 		return
@@ -1026,7 +1028,7 @@ func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}
 
 	// Check if task is currently active
-	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID)
+	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
 	if err != nil {
 		respondWithError(s, i, "Error checking active tasks: "+err.Error())
 		return
@@ -1112,7 +1114,8 @@ func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCre
 	// Create the global task
 	task := &models.Task{
 		ID:          uuid.New(),
-		UserID:      user.ID, // Store admin as creator
+		UserID:      user.ID,
+		ServerID:    i.GuildID,
 		Name:        taskName,
 		Description: description,
 		Global:      true,

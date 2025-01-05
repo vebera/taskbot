@@ -11,18 +11,17 @@ import (
 
 type Config struct {
 	Discord struct {
-		Token    string `yaml:"token"`
-		ClientID string `yaml:"client_id"`
-		GuildID  string `yaml:"guild_id"`
+		Token    string `yaml:"token" env:"DISCORD_TOKEN,required"`
+		ClientID string `yaml:"client_id" env:"DISCORD_CLIENT_ID,required"`
 	} `yaml:"discord"`
 
 	Database struct {
-		Host     string `yaml:"host"`
-		Port     int    `yaml:"port"`
-		User     string `yaml:"user"`
-		Password string `yaml:"password"`
-		DBName   string `yaml:"dbname"`
-		SSLMode  string `yaml:"sslmode"`
+		Host     string `yaml:"host" env:"DB_HOST,required"`
+		Port     int    `yaml:"port" env:"DB_PORT,required"`
+		User     string `yaml:"user" env:"DB_USER,required"`
+		Password string `yaml:"password" env:"DB_PASSWORD,required"`
+		DBName   string `yaml:"dbname" env:"DB_NAME,required"`
+		SSLMode  string `yaml:"sslmode" env:"DB_SSLMODE,required"`
 	} `yaml:"database"`
 }
 

@@ -18,12 +18,12 @@ type DB struct {
 }
 
 func New(config struct {
-	Host     string `yaml:"host"`
-	Port     int    `yaml:"port"`
-	User     string `yaml:"user"`
-	Password string `yaml:"password"`
-	DBName   string `yaml:"dbname"`
-	SSLMode  string `yaml:"sslmode"`
+	Host     string `yaml:"host" env:"DB_HOST,required"`
+	Port     int    `yaml:"port" env:"DB_PORT,required"`
+	User     string `yaml:"user" env:"DB_USER,required"`
+	Password string `yaml:"password" env:"DB_PASSWORD,required"`
+	DBName   string `yaml:"dbname" env:"DB_NAME,required"`
+	SSLMode  string `yaml:"sslmode" env:"DB_SSLMODE,required"`
 }) (*DB, error) {
 	// Create a configuration object
 	cfg, err := pgxpool.ParseConfig(fmt.Sprintf(
@@ -53,12 +53,13 @@ func New(config struct {
 // CreateTask creates a new task in the database
 func (db *DB) CreateTask(task *models.Task) error {
 	query := `
-		INSERT INTO tasks (id, user_id, name, description, tags, completed, global, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+		INSERT INTO tasks (id, user_id, server_id, name, description, tags, completed, global, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
 
 	_, err := db.Exec(context.Background(), query,
 		task.ID.String(),
 		task.UserID.String(),
+		task.ServerID,
 		task.Name,
 		task.Description,
 		task.Tags,
@@ -72,12 +73,13 @@ func (db *DB) CreateTask(task *models.Task) error {
 // CreateCheckIn creates a new check-in record
 func (db *DB) CreateCheckIn(checkIn *models.CheckIn) error {
 	query := `
-		INSERT INTO check_ins (id, user_id, task_id, start_time, active)
-		VALUES ($1, $2, $3, $4, $5)`
+		INSERT INTO check_ins (id, user_id, server_id, task_id, start_time, active)
+		VALUES ($1, $2, $3, $4, $5, $6)`
 
 	_, err := db.Exec(context.Background(), query,
 		checkIn.ID.String(),
 		checkIn.UserID.String(),
+		checkIn.ServerID,
 		checkIn.TaskID.String(),
 		checkIn.StartTime,
 		true,
@@ -86,18 +88,19 @@ func (db *DB) CreateCheckIn(checkIn *models.CheckIn) error {
 }
 
 // GetActiveCheckIn gets the active check-in for a user if one exists
-func (db *DB) GetActiveCheckIn(userID uuid.UUID) (*models.CheckIn, error) {
+func (db *DB) GetActiveCheckIn(userID uuid.UUID, serverID string) (*models.CheckIn, error) {
 	query := `
-		SELECT id, user_id, task_id, start_time, end_time, active
+		SELECT id, user_id, server_id, task_id, start_time, end_time, active
 		FROM check_ins
-		WHERE user_id = $1 AND active = true
+		WHERE user_id = $1 AND server_id = $2 AND active = true
 		LIMIT 1`
 
 	var checkIn models.CheckIn
 	var endTime sql.NullTime
-	err := db.QueryRow(context.Background(), query, userID.String()).Scan(
+	err := db.QueryRow(context.Background(), query, userID.String(), serverID).Scan(
 		&checkIn.ID,
 		&checkIn.UserID,
+		&checkIn.ServerID,
 		&checkIn.TaskID,
 		&checkIn.StartTime,
 		&endTime,
@@ -167,17 +170,17 @@ func (db *DB) GetTaskByID(taskID uuid.UUID) (*models.Task, error) {
 	return task, err
 }
 
-// GetAllActiveCheckIns retrieves all active check-ins with associated tasks
-func (db *DB) GetAllActiveCheckIns() ([]*models.CheckInWithTask, error) {
+// GetAllActiveCheckIns retrieves all active check-ins with associated tasks for a server
+func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			c.id, c.user_id, c.task_id, c.start_time, c.end_time,
+			c.id, c.user_id, c.server_id, c.task_id, c.start_time, c.end_time,
 			t.name, t.description
 		FROM check_ins c
 		JOIN tasks t ON c.task_id = t.id
-		WHERE c.active = true`
+		WHERE c.active = true AND c.server_id = $1`
 
-	rows, err := db.Query(context.Background(), query)
+	rows, err := db.Query(context.Background(), query, serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,6 +195,7 @@ func (db *DB) GetAllActiveCheckIns() ([]*models.CheckInWithTask, error) {
 		err := rows.Scan(
 			&ci.CheckIn.ID,
 			&ci.CheckIn.UserID,
+			&ci.CheckIn.ServerID,
 			&ci.CheckIn.TaskID,
 			&ci.CheckIn.StartTime,
 			&ci.CheckIn.EndTime,
@@ -244,6 +248,53 @@ func (db *DB) GetTaskHistory(userID uuid.UUID, startDate, endDate time.Time) ([]
 		if err != nil {
 			return nil, err
 		}
+		checkIns = append(checkIns, ci)
+	}
+	return checkIns, rows.Err()
+}
+
+// GetAllTaskHistory retrieves completed check-ins for all users within a date range for a server
+func (db *DB) GetAllTaskHistory(serverID string, startDate, endDate time.Time) ([]*models.CheckInWithTask, error) {
+	query := `
+		SELECT 
+			c.id, c.user_id, c.server_id, c.task_id, c.start_time, c.end_time,
+			t.name, t.description, t.completed
+		FROM check_ins c
+		JOIN tasks t ON c.task_id = t.id
+		WHERE c.server_id = $1 
+		AND c.start_time >= $2 
+		AND c.start_time < $3
+		AND c.end_time IS NOT NULL
+		ORDER BY c.start_time DESC`
+
+	rows, err := db.Query(context.Background(), query, serverID, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var checkIns []*models.CheckInWithTask
+	for rows.Next() {
+		ci := &models.CheckInWithTask{
+			CheckIn: &models.CheckIn{},
+			Task:    &models.Task{},
+		}
+		var endTime time.Time
+		err := rows.Scan(
+			&ci.CheckIn.ID,
+			&ci.CheckIn.UserID,
+			&ci.CheckIn.ServerID,
+			&ci.CheckIn.TaskID,
+			&ci.CheckIn.StartTime,
+			&endTime,
+			&ci.Task.Name,
+			&ci.Task.Description,
+			&ci.Task.Completed,
+		)
+		if err != nil {
+			return nil, err
+		}
+		ci.CheckIn.EndTime = &endTime
 		checkIns = append(checkIns, ci)
 	}
 	return checkIns, rows.Err()
@@ -340,15 +391,15 @@ func (db *DB) GetCheckInByID(checkInID uuid.UUID) (*models.CheckIn, error) {
 	return &checkIn, nil
 }
 
-// GetUserTasks retrieves all tasks for a user, including global tasks
-func (db *DB) GetUserTasks(userID uuid.UUID) ([]*models.Task, error) {
+// GetUserTasks retrieves all tasks for a user in a specific server
+func (db *DB) GetUserTasks(userID uuid.UUID, serverID string) ([]*models.Task, error) {
 	query := `
-		SELECT id, user_id, name, description, tags, completed, global, created_at
+		SELECT id, user_id, server_id, name, description, tags, completed, global, created_at
 		FROM tasks
-		WHERE user_id = $1 OR global = true
+		WHERE (user_id = $1 OR global = true) AND server_id = $2
 		ORDER BY created_at DESC`
 
-	rows, err := db.Query(context.Background(), query, userID.String())
+	rows, err := db.Query(context.Background(), query, userID.String(), serverID)
 	if err != nil {
 		return nil, err
 	}
@@ -360,6 +411,7 @@ func (db *DB) GetUserTasks(userID uuid.UUID) ([]*models.Task, error) {
 		err := rows.Scan(
 			&task.ID,
 			&task.UserID,
+			&task.ServerID,
 			&task.Name,
 			&task.Description,
 			&task.Tags,
@@ -375,49 +427,105 @@ func (db *DB) GetUserTasks(userID uuid.UUID) ([]*models.Task, error) {
 	return tasks, rows.Err()
 }
 
-// GetAllTaskHistory retrieves completed check-ins for all users within a date range
-func (db *DB) GetAllTaskHistory(startDate, endDate time.Time) ([]*models.CheckInWithTask, error) {
+// GetAllUsers retrieves all users from the database
+func (db *DB) GetAllUsers() ([]*models.User, error) {
 	query := `
-		SELECT 
-			c.id, c.user_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description, t.completed
-		FROM check_ins c
-		JOIN tasks t ON c.task_id = t.id
-		WHERE c.start_time >= $1 
-		AND c.start_time < $2
-		AND c.end_time IS NOT NULL
-		ORDER BY c.start_time DESC`
+		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
+		FROM users u
+		LEFT JOIN check_ins c ON u.id = c.user_id
+		ORDER BY 
+			-- Show users with activity first, then others
+			CASE WHEN c.id IS NOT NULL THEN 0 ELSE 1 END,
+			u.username ASC`
 
-	rows, err := db.Query(context.Background(), query, startDate, endDate)
+	rows, err := db.Query(context.Background(), query)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var checkIns []*models.CheckInWithTask
+	var users []*models.User
 	for rows.Next() {
-		ci := &models.CheckInWithTask{
-			CheckIn: &models.CheckIn{},
-			Task:    &models.Task{},
-		}
-		var endTime time.Time
+		user := &models.User{}
 		err := rows.Scan(
-			&ci.CheckIn.ID,
-			&ci.CheckIn.UserID,
-			&ci.CheckIn.TaskID,
-			&ci.CheckIn.StartTime,
-			&endTime,
-			&ci.Task.Name,
-			&ci.Task.Description,
-			&ci.Task.Completed,
+			&user.ID,
+			&user.DiscordID,
+			&user.Username,
+			&user.Timezone,
+			&user.CreatedAt,
 		)
 		if err != nil {
 			return nil, err
 		}
-		ci.CheckIn.EndTime = &endTime
-		checkIns = append(checkIns, ci)
+		users = append(users, user)
 	}
-	return checkIns, rows.Err()
+	return users, rows.Err()
+}
+
+// GetServerSettings retrieves settings for a specific server
+func (db *DB) GetServerSettings(serverID string) (*models.ServerSettings, error) {
+	query := `
+		SELECT id, server_id, inactivity_limit, ping_timeout, created_at
+		FROM server_settings
+		WHERE server_id = $1`
+
+	settings := &models.ServerSettings{}
+	err := db.QueryRow(context.Background(), query, serverID).Scan(
+		&settings.ID,
+		&settings.ServerID,
+		&settings.InactivityLimit,
+		&settings.PingTimeout,
+		&settings.CreatedAt,
+	)
+
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("error getting server settings: %w", err)
+	}
+
+	return settings, nil
+}
+
+// CreateServerSettings creates new settings for a server with default values
+func (db *DB) CreateServerSettings(serverID string) (*models.ServerSettings, error) {
+	settings := &models.ServerSettings{
+		ID:              uuid.New(),
+		ServerID:        serverID,
+		InactivityLimit: 30, // Default 30 minutes
+		PingTimeout:     5,  // Default 5 minutes
+		CreatedAt:       time.Now(),
+	}
+
+	query := `
+		INSERT INTO server_settings (id, server_id, inactivity_limit, ping_timeout, created_at)
+		VALUES ($1, $2, $3, $4, $5)`
+
+	_, err := db.Exec(context.Background(), query,
+		settings.ID.String(),
+		settings.ServerID,
+		settings.InactivityLimit,
+		settings.PingTimeout,
+		settings.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error creating server settings: %w", err)
+	}
+
+	return settings, nil
+}
+
+// GetOrCreateServerSettings retrieves server settings or creates them with defaults
+func (db *DB) GetOrCreateServerSettings(serverID string) (*models.ServerSettings, error) {
+	settings, err := db.GetServerSettings(serverID)
+	if err != nil {
+		return nil, err
+	}
+	if settings == nil {
+		return db.CreateServerSettings(serverID)
+	}
+	return settings, nil
 }
 
 // GetUserByID retrieves a user by their ID
@@ -463,39 +571,4 @@ func (db *DB) UpdateTaskStatus(taskID uuid.UUID, completed bool) error {
 	}
 
 	return nil
-}
-
-// GetAllUsers retrieves all users from the database
-func (db *DB) GetAllUsers() ([]*models.User, error) {
-	query := `
-		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
-		FROM users u
-		LEFT JOIN check_ins c ON u.id = c.user_id
-		ORDER BY 
-			-- Show users with activity first, then others
-			CASE WHEN c.id IS NOT NULL THEN 0 ELSE 1 END,
-			u.username ASC`
-
-	rows, err := db.Query(context.Background(), query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var users []*models.User
-	for rows.Next() {
-		user := &models.User{}
-		err := rows.Scan(
-			&user.ID,
-			&user.DiscordID,
-			&user.Username,
-			&user.Timezone,
-			&user.CreatedAt,
-		)
-		if err != nil {
-			return nil, err
-		}
-		users = append(users, user)
-	}
-	return users, rows.Err()
 }

@@ -15,9 +15,6 @@ import (
 )
 
 func main() {
-	log.Println("Starting TaskBot application...")
-
-	// Load environment variables from .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found")
 	}
@@ -28,46 +25,32 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	// Initialize database
+	// Connect to database
 	database, err := db.New(cfg.Database)
 	if err != nil {
-		log.Fatalf("Failed to initialize database: %v", err)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	// Initialize bot
-	discordBot, err := bot.New(cfg.Discord, database)
+	// Create bot instance
+	bot, err := bot.New(cfg, database)
 	if err != nil {
 		log.Fatalf("Failed to create bot: %v", err)
 	}
 
-	// Set up signal handling
+	// Set up signal handling for graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
-	signals := make(chan os.Signal, 1)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 
 	go func() {
-		s := <-signals
-		log.Printf("Received signal: %v", s)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+		<-sigCh
+		log.Println("Received shutdown signal")
 		cancel()
 	}()
 
-	// Start the bot
-	go func() {
-		if err := discordBot.Start(ctx); err != nil {
-			log.Printf("Error running bot: %v", err)
-			cancel()
-		}
-	}()
-
-	// Wait for shutdown
-	<-ctx.Done()
-	log.Println("Shutdown signal received")
-
-	// Perform cleanup
-	if err := discordBot.Shutdown(); err != nil {
-		log.Printf("Error during shutdown: %v", err)
-		os.Exit(1)
+	// Start bot
+	if err := bot.Start(ctx); err != nil {
+		log.Fatalf("Bot error: %v", err)
 	}
-
-	log.Println("Application shutdown complete")
 }
