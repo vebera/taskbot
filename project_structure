@@ -1,0 +1,25 @@
+taskbot/
+├── cmd/
+│   └── taskbot/
+│       └── main.go
+├── internal/
+│   ├── bot/
+│   │   ├── commands.go
+│   │   └── bot.go
+│   ├── config/
+│   │   └── config.go
+│   ├── db/
+│   │   ├── models/
+│   │   │   ├── user.go
+│   │   │   ├── task.go
+│   │   │   ├── checkin.go
+│   │   │   └── server_settings.go
+│   │   └── db.go
+│   └── handlers/
+│       ├── user_handler.go
+│       ├── task_handler.go
+│       └── checkin_handler.go
+├── migrations/
+│   └── 001_initial_schema.sql
+├── go.mod
+└── config.yaml 

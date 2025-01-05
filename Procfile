@@ -1,0 +1,1 @@
+worker: go run cmd/taskbot/main.go 
