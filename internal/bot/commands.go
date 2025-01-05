@@ -321,42 +321,35 @@ func (b *Bot) handleUsernameAutocomplete(s *discordgo.Session, i *discordgo.Inte
 		return
 	}
 
-	log.Printf("Total users found: %d", len(users))
-
 	// Get the current input value
 	var focusedOption *discordgo.ApplicationCommandInteractionDataOption
 	for _, opt := range i.ApplicationCommandData().Options {
-		log.Printf("Checking option: %s, focused: %v", opt.Name, opt.Focused)
-		if opt.Focused && opt.Name == "username" {
+		if opt.Name == "username" && opt.Focused {
 			focusedOption = opt
 			break
 		}
 	}
 
 	if focusedOption == nil {
-		log.Printf("No focused username option found in command. Options: %+v", i.ApplicationCommandData().Options)
 		return
 	}
 
 	input := strings.ToLower(focusedOption.StringValue())
-	log.Printf("Autocomplete input: %s", input)
 
 	// Filter and create choices
 	var choices []*discordgo.ApplicationCommandOptionChoice
 	for _, user := range users {
+		// Case-insensitive substring match
 		if strings.Contains(strings.ToLower(user.Username), input) {
 			choices = append(choices, &discordgo.ApplicationCommandOptionChoice{
 				Name:  user.Username,
 				Value: user.Username,
 			})
-			log.Printf("Added choice: %s", user.Username)
 		}
 		if len(choices) >= 25 { // Discord limit
 			break
 		}
 	}
-
-	log.Printf("Found %d matching users", len(choices))
 
 	err = s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionApplicationCommandAutocompleteResult,
@@ -855,6 +848,7 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
 				Files: []*discordgo.File{file},
+				Flags: discordgo.MessageFlagsEphemeral,
 			},
 		})
 		return

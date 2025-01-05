@@ -35,6 +35,7 @@ func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, errM
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: "Error: " + errMsg,
+			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
 }
@@ -64,6 +65,7 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
 		Data: &discordgo.InteractionResponseData{
 			Content: msg,
+			Flags:   discordgo.MessageFlagsEphemeral,
 		},
 	})
 }
