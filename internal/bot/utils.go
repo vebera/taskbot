@@ -42,7 +42,22 @@ func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, errM
 
 // getUserFromInteraction gets or creates a user from the interaction
 func (b *Bot) getUserFromInteraction(s *discordgo.Session, i *discordgo.InteractionCreate) (*models.User, error) {
-	user, err := b.db.GetOrCreateUser(i.Member.User.ID, i.Member.User.Username)
+	var userID, username string
+	if i.Member != nil && i.Member.User != nil {
+		// Server interaction
+		userID = i.Member.User.ID
+		username = i.Member.User.Username
+	} else if i.User != nil {
+		// DM interaction
+		userID = i.User.ID
+		username = i.User.Username
+	} else {
+		err := fmt.Errorf("could not get user information from interaction")
+		respondWithError(s, i, err.Error())
+		return nil, err
+	}
+
+	user, err := b.db.GetOrCreateUser(userID, username)
 	if err != nil {
 		respondWithError(s, i, "Error getting user: "+err.Error())
 		return nil, err
@@ -73,7 +88,16 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 // logCommand logs command execution to console and sends to the server
 func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	username := i.Member.User.Username
+
+	// Get username safely, handling both DM and server contexts
+	var username string
+	if i.Member != nil && i.Member.User != nil {
+		username = i.Member.User.Username
+	} else if i.User != nil {
+		username = i.User.Username
+	} else {
+		username = "unknown"
+	}
 
 	// Build command parameters string
 	var params []string

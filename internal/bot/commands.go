@@ -414,7 +414,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 	}
 
-	logCommand(s, i, "checkin", fmt.Sprintf("task: %s", task.Name))
+	logCommand(s, i, "checkin", task.Name)
 
 	// Check for active check-in
 	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
