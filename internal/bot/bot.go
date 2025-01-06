@@ -160,22 +160,37 @@ func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) 
 	if _, err := b.db.GetOrCreateServerSettings(g.ID); err != nil {
 		log.Printf("Error initializing settings for guild %s: %v", g.ID, err)
 	}
+
+	// Register commands for the new guild
+	log.Printf("Registering commands for guild: %s", g.ID)
+	for _, cmd := range commands {
+		log.Printf("Registering command: %s", cmd.Name)
+		_, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, g.ID, cmd)
+		if err != nil {
+			log.Printf("Error registering command %s for guild %s: %v", cmd.Name, g.ID, err)
+			continue
+		}
+		log.Printf("Successfully registered command: %s", cmd.Name)
+	}
 }
 
 func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Map of command names to their handlers
-	commandHandlers := map[string]func(s *discordgo.Session, i *discordgo.InteractionCreate){
-		"timezone":   b.handleTimezone,
-		"checkin":    b.handleCheckin,
-		"checkout":   b.handleCheckout,
-		"status":     b.handleStatus,
-		"report":     b.handleReport,
-		"task":       b.handleTask,
-		"globaltask": b.handleGlobalTask,
-	}
-
-	if h, ok := commandHandlers[i.ApplicationCommandData().Name]; ok {
-		log.Printf("Handling command: %s", i.ApplicationCommandData().Name)
-		h(s, i)
+	switch i.ApplicationCommandData().Name {
+	case "timezone":
+		b.handleTimezone(s, i)
+	case "declare":
+		b.handleDeclare(s, i)
+	case "checkin":
+		b.handleCheckin(s, i)
+	case "checkout":
+		b.handleCheckout(s, i)
+	case "status":
+		b.handleStatus(s, i)
+	case "report":
+		b.handleReport(s, i)
+	case "task":
+		b.handleTask(s, i)
+	case "globaltask":
+		b.handleGlobalTask(s, i)
 	}
 }

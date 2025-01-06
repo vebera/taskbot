@@ -85,7 +85,7 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 	})
 }
 
-// logCommand logs command execution to console and sends to the server
+// logCommand logs command execution to console
 func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 
@@ -123,11 +123,8 @@ func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandNam
 		logMessage += fmt.Sprintf(" (%s)", strings.Join(details, " "))
 	}
 
-	// Log to console
+	// Log to console only
 	log.Println(logMessage)
-
-	// Send log to Discord server
-	sendServerLog(s, i.ChannelID, logMessage)
 }
 
 // logError logs errors to both console and Discord server
@@ -135,11 +132,8 @@ func logError(s *discordgo.Session, channelID string, errContext, errMsg string)
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
 	logMessage := fmt.Sprintf("[%s] ERROR - %s: %s", timestamp, errContext, errMsg)
 
-	// Log to console
+	// Log to console only
 	log.Println(logMessage)
-
-	// Send log to Discord server
-	sendServerLog(s, channelID, logMessage)
 }
 
 // sendServerLog sends a log message to the Discord server

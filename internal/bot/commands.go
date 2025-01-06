@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +26,25 @@ var (
 					Type:        discordgo.ApplicationCommandOptionString,
 					Name:        "zone",
 					Description: "Timezone (e.g., America/New_York, Europe/London)",
+					Required:    true,
+				},
+			},
+		},
+		{
+			Name:        "declare",
+			Description: "Declare time spent on a task",
+			Options: []*discordgo.ApplicationCommandOption{
+				{
+					Type:         discordgo.ApplicationCommandOptionString,
+					Name:         "task",
+					Description:  "Select a task",
+					Required:     true,
+					Autocomplete: true,
+				},
+				{
+					Type:        discordgo.ApplicationCommandOptionString,
+					Name:        "time",
+					Description: "Time spent (format: hh:mm)",
 					Required:    true,
 				},
 			},
@@ -205,7 +225,7 @@ var (
 
 func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	switch i.ApplicationCommandData().Name {
-	case "checkin", "task":
+	case "checkin", "task", "declare":
 		b.handleTaskAutocomplete(s, i)
 	case "report":
 		b.handleUsernameAutocomplete(s, i)
@@ -249,7 +269,7 @@ func (b *Bot) handleTaskAutocomplete(s *discordgo.Session, i *discordgo.Interact
 			focusedOption = i.ApplicationCommandData().Options[0].Options[0]
 		}
 	} else {
-		// For task command, the task option is directly in the options
+		// For task and declare commands, the task option is directly in the options
 		if len(i.ApplicationCommandData().Options) > 0 {
 			focusedOption = i.ApplicationCommandData().Options[0]
 		}
@@ -635,10 +655,21 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		}
 	}
 
+	// Get user ID safely
+	var userID string
+	if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
+	} else if i.User != nil {
+		userID = i.User.ID
+	} else {
+		respondWithError(s, i, "Could not determine user information")
+		return
+	}
+
 	// Check if user is admin when requesting CSV
-	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
+	isUserAdmin := isAdmin(s, i.GuildID, userID)
 	if format == "csv" && !isUserAdmin {
-		log.Printf("CSV access denied for user %s in guild %s", i.Member.User.ID, i.GuildID)
+		log.Printf("CSV access denied for user %s in guild %s", userID, i.GuildID)
 		respondWithError(s, i, "CSV format is only available for administrators")
 		return
 	}
@@ -1131,4 +1162,116 @@ func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCre
 	}
 
 	respondWithSuccess(s, i, fmt.Sprintf("Created global task: %s", task.Name))
+}
+
+func (b *Bot) handleDeclare(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	options := i.ApplicationCommandData().Options
+	taskID, err := uuid.Parse(options[0].StringValue())
+	if err != nil {
+		respondWithError(s, i, "Invalid task ID")
+		return
+	}
+
+	timeStr := options[1].StringValue()
+	// Parse time in format "hh:mm"
+	parts := strings.Split(timeStr, ":")
+	if len(parts) != 2 {
+		respondWithError(s, i, "Invalid time format. Please use hh:mm")
+		return
+	}
+
+	hours, err := strconv.Atoi(parts[0])
+	if err != nil || hours < 0 {
+		respondWithError(s, i, "Invalid hours value")
+		return
+	}
+
+	minutes, err := strconv.Atoi(parts[1])
+	if err != nil || minutes < 0 || minutes >= 60 {
+		respondWithError(s, i, "Invalid minutes value")
+		return
+	}
+
+	duration := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute
+
+	// Get the user
+	user, err := b.getUserFromInteraction(s, i)
+	if err != nil {
+		return
+	}
+
+	// Get the task
+	task, err := b.db.GetTaskByID(taskID)
+	if err != nil {
+		respondWithError(s, i, "Error getting task: "+err.Error())
+		return
+	}
+	if task == nil {
+		respondWithError(s, i, "Task not found")
+		return
+	}
+
+	// Log command with warning if over 8 hours
+	if duration > 8*time.Hour {
+		logCommand(s, i, "declare", fmt.Sprintf("⚠️ OVER 8 HOURS: %s on task: %s", formatDuration(duration), task.Name))
+	} else {
+		logCommand(s, i, "declare", fmt.Sprintf("%s on task: %s", formatDuration(duration), task.Name))
+	}
+
+	// Create check-in record with end time
+	now := time.Now()
+	startTime := now.Add(-duration)
+	checkIn := &models.CheckIn{
+		ID:        uuid.New(),
+		UserID:    user.ID,
+		ServerID:  i.GuildID,
+		TaskID:    task.ID,
+		StartTime: startTime,
+		EndTime:   &now,
+	}
+
+	if err := b.db.CreateCheckIn(checkIn); err != nil {
+		logError(s, i.ChannelID, "CreateCheckIn", err.Error())
+		respondWithError(s, i, "Error creating check-in: "+err.Error())
+		return
+	}
+
+	// Check for and handle any active check-in
+	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
+	if err != nil {
+		logError(s, i.ChannelID, "GetActiveCheckIn", err.Error())
+		respondWithError(s, i, "Error checking active tasks: "+err.Error())
+		return
+	}
+
+	var checkoutMsg string
+	if activeCheckIn != nil {
+		// Get active task details
+		activeTask, err := b.db.GetTaskByID(activeCheckIn.TaskID)
+		if err != nil {
+			logError(s, i.ChannelID, "GetTaskByID", err.Error())
+			respondWithError(s, i, "Error retrieving active task details: "+err.Error())
+			return
+		}
+
+		// Check out from active task
+		if err := b.db.CheckOut(activeCheckIn.ID); err != nil {
+			respondWithError(s, i, "Error checking out: "+err.Error())
+			return
+		}
+
+		// Get the updated check-in to get the actual end time
+		updatedCheckIn, err := b.db.GetCheckInByID(activeCheckIn.ID)
+		if err != nil {
+			respondWithError(s, i, "Error retrieving checkout details: "+err.Error())
+			return
+		}
+
+		activeDuration := updatedCheckIn.EndTime.Sub(updatedCheckIn.StartTime)
+		checkoutMsg = fmt.Sprintf("\nChecked out from active task: %s (Time spent: %s)",
+			activeTask.Name, formatDuration(activeDuration))
+	}
+
+	respondWithSuccess(s, i, fmt.Sprintf("Declared %s spent on task: %s%s",
+		formatDuration(duration), task.Name, checkoutMsg))
 }

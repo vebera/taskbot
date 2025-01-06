@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  taskbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - DB_HOST=${DB_HOST:-db}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_USER=${DB_USER:-taskbot}
+      - DB_PASSWORD=${DB_PASSWORD:-taskbot}
+      - DB_NAME=${DB_NAME:-taskbot}
+      - DB_SSLMODE=${DB_SSLMODE:-disable}
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+    volumes:
+      - ./config.yaml:/etc/taskbot/config.yaml:ro
+
+  db:
+    profiles:
+      - database
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${DB_USER:-taskbot}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-taskbot}
+      - POSTGRES_DB=${DB_NAME:-taskbot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-taskbot} -d ${DB_NAME:-taskbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data: 

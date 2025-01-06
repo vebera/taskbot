@@ -1,43 +1,62 @@
 #!/bin/bash
 
-# Exit on any error
-set -e
-
-# Colors for output
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
-
-# Print with color
-print_green() {
-    echo -e "${GREEN}$1${NC}"
+# Function to display usage
+usage() {
+    echo "Usage: $0 <command>"
+    echo "Commands:"
+    echo "  up, -u         - Start taskbot without database"
+    echo "  up-db          - Start taskbot with database"
+    echo "  down, -d       - Stop all services"
+    echo "  db             - Start only the database"
+    echo "  logs           - Show logs from all services"
+    echo "  logs-db        - Show logs from database only"
+    echo "  logs-bot       - Show logs from taskbot only"
+    echo "  build, -b      - Rebuild taskbot image"
+    echo "  restart, -r    - Restart all services"
+    echo "  ps             - Show running services"
+    exit 1
 }
 
-print_red() {
-    echo -e "${RED}$1${NC}"
-}
-
-# Check if .env file exists
-if [ ! -f .env ]; then
-    print_red "Error: .env file not found!"
-    exit 1
+# Check if command is provided
+if [ $# -eq 0 ]; then
+    usage
 fi
 
-# Check if migrations directory exists
-if [ ! -d migrations ]; then
-    print_red "Error: migrations directory not found!"
-    exit 1
-fi
-
-# Run database migrations
-print_green "Running database migrations..."
-go run cmd/migrate/main.go
-if [ $? -ne 0 ]; then
-    print_red "Migration failed!"
-    exit 1
-fi
-print_green "Migrations completed successfully."
-
-# Build and run the application
-print_green "Starting TaskBot..."
-go run cmd/taskbot/main.go 
+# Handle commands
+case "$1" in
+    "up"|"-u")
+        docker compose up -d
+        ;;
+    "up-db")
+        docker compose --profile database up -d
+        ;;
+    "down"|"-d")
+        docker compose --profile database down
+        ;;
+    "db")
+        docker compose --profile database up -d db
+        ;;
+    "logs")
+        docker compose --profile database logs -f
+        ;;
+    "logs-db")
+        docker compose --profile database logs -f db
+        ;;
+    "logs-bot")
+        docker compose logs -f taskbot
+        ;;
+    "build"|"-b")
+        docker compose build
+        ;;
+    "restart"|"-r")
+        docker compose --profile database down
+        docker compose --profile database up -d
+        ;;
+    "ps")
+        docker compose --profile database ps
+        ;;
+    *)
+        echo "Unknown command: $1"
+        usage
+        ;;
+esac 
