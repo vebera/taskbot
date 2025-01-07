@@ -48,7 +48,39 @@ TaskBot is a Discord bot designed to help teams track time spent on tasks, manag
 2. Set up the required environment variables (see `.env.example`)
 3. Configure the database (PostgreSQL)
 4. Run the migrations
-5. Start the bot using Docker or directly with Go
+5. Start the bot using the provided `stack.sh` script:
+
+### Using stack.sh
+
+The `stack.sh` script provides easy management of the TaskBot services:
+
+```bash
+./stack.sh <command>
+```
+
+Available commands:
+- `up` or `-u` - Start TaskBot without database
+- `up-db` - Start TaskBot with database
+- `down` or `-d` - Stop all services
+- `db` - Start only the database
+- `logs` - Show logs from all services
+- `logs-db` - Show logs from database only
+- `logs-bot` - Show logs from TaskBot only
+- `build` or `-b` - Rebuild TaskBot image
+- `restart` or `-r` - Restart all services
+- `ps` - Show running services
+
+Example usage:
+```bash
+# Start TaskBot with database
+./stack.sh up-db
+
+# View logs
+./stack.sh logs
+
+# Stop all services
+./stack.sh down
+```
 
 ## Environment Variables
 
