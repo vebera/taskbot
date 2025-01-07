@@ -14,6 +14,9 @@ usage() {
     echo "  build, -b      - Rebuild taskbot image"
     echo "  restart, -r    - Restart all services"
     echo "  ps             - Show running services"
+    echo "  local          - Run taskbot locally (requires Go)"
+    echo "  local-db       - Run taskbot locally with database"
+    echo "  migrate        - Run database migrations"
     exit 1
 }
 
@@ -55,8 +58,18 @@ case "$1" in
     "ps")
         docker compose --profile database ps
         ;;
+    "local")
+        go run cmd/taskbot/main.go
+        ;;
+    "local-db")
+        docker compose --profile database up -d db
+        sleep 3  # Wait for database to be ready
+        go run cmd/taskbot/main.go
+        ;;
+    "migrate")
+        go run cmd/migrate/main.go
+        ;;
     *)
-        echo "Unknown command: $1"
         usage
         ;;
 esac 

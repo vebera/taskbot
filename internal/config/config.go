@@ -25,10 +25,29 @@ type Config struct {
 	} `yaml:"database"`
 }
 
+var configPaths = []string{
+	"config.yaml",              // Current directory
+	"/etc/taskbot/config.yaml", // Docker mount path
+	"../config.yaml",           // Parent directory
+	"../../config.yaml",        // Two levels up
+}
+
 func Load() (*Config, error) {
-	data, err := os.ReadFile("config.yaml")
+	var data []byte
+	var err error
+	var loadedPath string
+
+	// Try each config path
+	for _, path := range configPaths {
+		data, err = os.ReadFile(path)
+		if err == nil {
+			loadedPath = path
+			break
+		}
+	}
+
 	if err != nil {
-		return nil, fmt.Errorf("error reading config file: %w", err)
+		return nil, fmt.Errorf("error reading config file from paths %v: %w", configPaths, err)
 	}
 
 	// Replace environment variables in the YAML content
@@ -44,7 +63,7 @@ func Load() (*Config, error) {
 
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
-		return nil, fmt.Errorf("error parsing config: %w", err)
+		return nil, fmt.Errorf("error parsing config from %s: %w", loadedPath, err)
 	}
 
 	// Convert DB_PORT from string to int if it's an environment variable

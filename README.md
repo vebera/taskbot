@@ -59,6 +59,8 @@ The `stack.sh` script provides easy management of the TaskBot services:
 ```
 
 Available commands:
+
+Docker-based deployment:
 - `up` or `-u` - Start TaskBot without database
 - `up-db` - Start TaskBot with database
 - `down` or `-d` - Stop all services
@@ -70,10 +72,19 @@ Available commands:
 - `restart` or `-r` - Restart all services
 - `ps` - Show running services
 
+Local development (requires Go):
+- `local` - Run TaskBot locally without database
+- `local-db` - Run TaskBot locally with database
+- `migrate` - Run database migrations
+
 Example usage:
 ```bash
-# Start TaskBot with database
+# Docker deployment
 ./stack.sh up-db
+
+# Local development
+./stack.sh local-db  # Starts database in Docker and runs bot locally
+./stack.sh migrate   # Run database migrations
 
 # View logs
 ./stack.sh logs
