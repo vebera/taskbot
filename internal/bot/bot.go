@@ -39,6 +39,44 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 	}, nil
 }
 
+// Helper function to register commands for a guild
+func (b *Bot) registerGuildCommands(guildID string) error {
+	log.Printf("Registering commands for guild: %s", guildID)
+
+	// First, clean up any existing commands
+	existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guildID)
+	if err != nil {
+		log.Printf("Error getting existing commands for guild %s: %v", guildID, err)
+	} else {
+		for _, cmd := range existingCommands {
+			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guildID, cmd.ID)
+			if err != nil {
+				log.Printf("Error removing old command %s from guild %s: %v", cmd.Name, guildID, err)
+			}
+		}
+	}
+
+	// Register new commands
+	var registeredCommands []*discordgo.ApplicationCommand
+	for _, cmd := range commands {
+		log.Printf("Registering command: %s", cmd.Name)
+		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, cmd)
+		if err != nil {
+			log.Printf("Error registering command %s for guild %s: %v", cmd.Name, guildID, err)
+			continue
+		}
+		registeredCommands = append(registeredCommands, registered)
+		log.Printf("Successfully registered command: %s", cmd.Name)
+	}
+
+	// Update the bot's command list
+	b.mu.Lock()
+	b.commands = append(b.commands, registeredCommands...)
+	b.mu.Unlock()
+
+	return nil
+}
+
 func (b *Bot) Start(ctx context.Context) error {
 	log.Println("Starting TaskBot...")
 
@@ -78,20 +116,14 @@ func (b *Bot) Start(ctx context.Context) error {
 		}
 	})
 
-	// Register commands globally (not guild-specific)
-	log.Println("Registering commands globally...")
-	registeredCommands := make([]*discordgo.ApplicationCommand, len(commands))
-	for i, cmd := range commands {
-		log.Printf("Registering command: %s", cmd.Name)
-		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, "", cmd)
-		if err != nil {
-			log.Printf("Error registering command %s: %v", cmd.Name, err)
-			continue
+	// Register commands for each guild the bot is in
+	log.Println("Registering commands for all guilds...")
+	for _, guild := range b.session.State.Guilds {
+		if err := b.registerGuildCommands(guild.ID); err != nil {
+			log.Printf("Error registering commands for guild %s: %v", guild.ID, err)
 		}
-		registeredCommands[i] = registered
-		log.Printf("Successfully registered command: %s", cmd.Name)
 	}
-	log.Printf("Successfully registered %d commands", len(registeredCommands))
+	log.Printf("Successfully registered commands for %d guilds", len(b.session.State.Guilds))
 
 	log.Println("Bot is now running. Press CTRL-C to exit.")
 
@@ -120,10 +152,18 @@ func (b *Bot) Shutdown() error {
 
 	// Remove commands
 	log.Println("Removing Discord commands...")
-	for _, cmd := range b.commands {
-		err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, "", cmd.ID)
+	for _, guild := range b.session.State.Guilds {
+		log.Printf("Removing commands from guild: %s", guild.ID)
+		registeredCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guild.ID)
 		if err != nil {
-			log.Printf("Error removing command %s: %v", cmd.Name, err)
+			log.Printf("Error getting commands for guild %s: %v", guild.ID, err)
+			continue
+		}
+		for _, cmd := range registeredCommands {
+			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guild.ID, cmd.ID)
+			if err != nil {
+				log.Printf("Error removing command %s from guild %s: %v", cmd.Name, guild.ID, err)
+			}
 		}
 	}
 
@@ -162,15 +202,8 @@ func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) 
 	}
 
 	// Register commands for the new guild
-	log.Printf("Registering commands for guild: %s", g.ID)
-	for _, cmd := range commands {
-		log.Printf("Registering command: %s", cmd.Name)
-		_, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, g.ID, cmd)
-		if err != nil {
-			log.Printf("Error registering command %s for guild %s: %v", cmd.Name, g.ID, err)
-			continue
-		}
-		log.Printf("Successfully registered command: %s", cmd.Name)
+	if err := b.registerGuildCommands(g.ID); err != nil {
+		log.Printf("Error registering commands for new guild %s: %v", g.ID, err)
 	}
 }
 
