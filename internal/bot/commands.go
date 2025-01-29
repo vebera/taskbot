@@ -235,11 +235,16 @@ func (b *Bot) handleAutocomplete(s *discordgo.Session, i *discordgo.InteractionC
 func (b *Bot) handleTaskAutocomplete(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	// Get the user's tasks for autocomplete
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
 	// Check if user is admin
+	if i == nil || i.Member == nil || i.Member.User == nil {
+		log.Printf("Interaction or member is nil")
+		return
+	}
 	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
 
 	// Get active check-in to filter out active task
@@ -390,7 +395,8 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 	var err error
 
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
@@ -475,7 +481,8 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 	logCommand(s, i, "checkout")
 
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
@@ -1034,7 +1041,8 @@ func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
 	// Get the user to verify ownership
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
@@ -1110,7 +1118,8 @@ func (b *Bot) handleTimezone(s *discordgo.Session, i *discordgo.InteractionCreat
 	}
 
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
@@ -1138,7 +1147,8 @@ func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCre
 
 	// Get the admin user
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 
@@ -1196,7 +1206,8 @@ func (b *Bot) handleDeclare(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// Get the user
 	user, err := b.getUserFromInteraction(s, i)
-	if err != nil {
+	if err != nil || user == nil {
+		log.Printf("Error getting user from interaction: %v", err)
 		return
 	}
 

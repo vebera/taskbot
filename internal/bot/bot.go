@@ -225,5 +225,7 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		b.handleTask(s, i)
 	case "globaltask":
 		b.handleGlobalTask(s, i)
+	default:
+		log.Printf("Unknown command: %s", i.ApplicationCommandData().Name)
 	}
 }
