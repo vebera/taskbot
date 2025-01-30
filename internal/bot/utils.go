@@ -186,3 +186,38 @@ func formatTable(headers []string, rows [][]string) string {
 
 	return result.String()
 }
+
+// Add this new function to handle permission checks
+func hasPermission(s *discordgo.Session, guildID string, userID string, requiredPermission int64) bool {
+	if guildID == "" {
+		return false // No permissions in DMs
+	}
+
+	member, err := s.GuildMember(guildID, userID)
+	if err != nil {
+		log.Printf("Error getting guild member: %v", err)
+		return false
+	}
+
+	// Check if user is guild owner
+	guild, err := s.Guild(guildID)
+	if err != nil {
+		log.Printf("Error getting guild: %v", err)
+		return false
+	}
+	if guild.OwnerID == userID {
+		return true
+	}
+
+	// Calculate permissions from roles
+	var permissions int64
+	for _, roleID := range member.Roles {
+		role, err := s.State.Role(guildID, roleID)
+		if err != nil {
+			continue
+		}
+		permissions |= role.Permissions
+	}
+
+	return (permissions & requiredPermission) == requiredPermission
+}

@@ -30,6 +30,10 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
+	session.Identify.Intents = discordgo.IntentsGuildMembers |
+		discordgo.IntentsGuildMessages |
+		discordgo.IntentsGuilds
+
 	return &Bot{
 		db:         database,
 		session:    session,

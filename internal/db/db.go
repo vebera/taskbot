@@ -257,8 +257,8 @@ func (db *DB) GetTaskHistory(userID uuid.UUID, startDate, endDate time.Time) ([]
 func (db *DB) GetAllTaskHistory(serverID string, startDate, endDate time.Time) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			c.id, c.user_id, c.server_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description, t.completed
+			c.id, c.user_id, c.task_id, c.start_time, c.end_time,
+			t.name, t.description
 		FROM check_ins c
 		JOIN tasks t ON c.task_id = t.id
 		WHERE c.server_id = $1 
@@ -283,13 +283,11 @@ func (db *DB) GetAllTaskHistory(serverID string, startDate, endDate time.Time) (
 		err := rows.Scan(
 			&ci.CheckIn.ID,
 			&ci.CheckIn.UserID,
-			&ci.CheckIn.ServerID,
 			&ci.CheckIn.TaskID,
 			&ci.CheckIn.StartTime,
 			&endTime,
 			&ci.Task.Name,
 			&ci.Task.Description,
-			&ci.Task.Completed,
 		)
 		if err != nil {
 			return nil, err
@@ -430,12 +428,17 @@ func (db *DB) GetUserTasks(userID uuid.UUID, serverID string) ([]*models.Task, e
 // GetAllUsers retrieves all users from the database
 func (db *DB) GetAllUsers() ([]*models.User, error) {
 	query := `
-		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
+		SELECT DISTINCT 
+			u.id, 
+			u.discord_id, 
+			u.username, 
+			u.timezone, 
+			u.created_at,
+			CASE WHEN c.id IS NOT NULL THEN 0 ELSE 1 END AS has_activity
 		FROM users u
 		LEFT JOIN check_ins c ON u.id = c.user_id
 		ORDER BY 
-			-- Show users with activity first, then others
-			CASE WHEN c.id IS NOT NULL THEN 0 ELSE 1 END,
+			has_activity,
 			u.username ASC`
 
 	rows, err := db.Query(context.Background(), query)
@@ -447,12 +450,14 @@ func (db *DB) GetAllUsers() ([]*models.User, error) {
 	var users []*models.User
 	for rows.Next() {
 		user := &models.User{}
+		var hasActivity int
 		err := rows.Scan(
 			&user.ID,
 			&user.DiscordID,
 			&user.Username,
 			&user.Timezone,
 			&user.CreatedAt,
+			&hasActivity,
 		)
 		if err != nil {
 			return nil, err
