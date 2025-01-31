@@ -49,6 +49,7 @@ case "$1" in
         docker compose logs -f taskbot
         ;;
     "build"|"-b")
+        git pull
         docker compose build
         ;;
     "restart"|"-r")
