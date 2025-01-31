@@ -39,17 +39,19 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
-	// Set all required intents
+	// Update intents to include all necessary ones
 	session.Identify.Intents = discordgo.IntentsAllWithoutPrivileged |
 		discordgo.IntentsGuildMembers |
 		discordgo.IntentsGuildPresences |
-		discordgo.IntentsMessageContent
+		discordgo.IntentsMessageContent |
+		discordgo.IntentsGuilds |
+		discordgo.IntentsGuildMessages
 
-	// Log bot configuration
+	// Log configuration details
 	log.Printf("Bot intents: %d", session.Identify.Intents)
 	log.Printf("Bot permissions: %d", config.Discord.Permissions)
 
-	// Generate and log invite URL
+	// Generate and log invite URL with proper scopes
 	inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%d&scope=bot%%20applications.commands",
 		config.Discord.ClientID,
 		config.Discord.Permissions)
@@ -156,14 +158,28 @@ func (b *Bot) Start(ctx context.Context) error {
 		}
 	})
 
-	// Register commands for each guild the bot is in
-	log.Println("Registering commands for all guilds...")
+	// Force re-register commands for all guilds
+	log.Println("Force re-registering commands for all guilds...")
 	for _, guild := range b.session.State.Guilds {
+		// First, delete all existing commands
+		existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guild.ID)
+		if err != nil {
+			log.Printf("Error getting existing commands for guild %s: %v", guild.ID, err)
+			continue
+		}
+
+		for _, cmd := range existingCommands {
+			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guild.ID, cmd.ID)
+			if err != nil {
+				log.Printf("Error deleting command %s from guild %s: %v", cmd.Name, guild.ID, err)
+			}
+		}
+
+		// Then register commands again
 		if err := b.registerGuildCommands(guild.ID); err != nil {
 			log.Printf("Error registering commands for guild %s: %v", guild.ID, err)
 		}
 	}
-	log.Printf("Successfully registered commands for %d guilds", len(b.session.State.Guilds))
 
 	log.Println("Bot is now running. Press CTRL-C to exit.")
 
