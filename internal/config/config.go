@@ -11,8 +11,9 @@ import (
 
 type Config struct {
 	Discord struct {
-		Token    string `yaml:"token" env:"DISCORD_TOKEN,required"`
-		ClientID string `yaml:"client_id" env:"DISCORD_CLIENT_ID,required"`
+		Token       string `yaml:"token" env:"DISCORD_TOKEN,required"`
+		ClientID    string `yaml:"client_id" env:"DISCORD_CLIENT_ID,required"`
+		Permissions int64  `yaml:"permissions" env:"DISCORD_PERMISSIONS"`
 	} `yaml:"discord"`
 
 	Database struct {
@@ -64,6 +65,15 @@ func Load() (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
 		return nil, fmt.Errorf("error parsing config from %s: %w", loadedPath, err)
+	}
+
+	// Load permissions from environment variable if present
+	if permStr := os.Getenv("DISCORD_PERMISSIONS"); permStr != "" {
+		perm, err := strconv.ParseInt(permStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid DISCORD_PERMISSIONS value: %w", err)
+		}
+		cfg.Discord.Permissions = perm
 	}
 
 	// Convert DB_PORT from string to int if it's an environment variable

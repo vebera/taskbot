@@ -393,6 +393,25 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
+	// Get user information, handling both DM and guild contexts
+	var userID, username string
+	if i.Member != nil && i.Member.User != nil {
+		userID = i.Member.User.ID
+		username = i.Member.User.Username
+	} else if i.User != nil {
+		userID = i.User.ID
+		username = i.User.Username
+	} else {
+		respondWithError(s, i, "Could not determine user information")
+		return
+	}
+
+	// Log the interaction context
+	log.Printf("Processing command for user %s (ID: %s) in context: %s",
+		username,
+		userID,
+		map[bool]string{true: "DM", false: "Guild"}[i.Member == nil])
+
 	subcommand := i.ApplicationCommandData().Options[0]
 	if subcommand == nil {
 		respondWithError(s, i, "Invalid subcommand")

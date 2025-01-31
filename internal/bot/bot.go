@@ -31,13 +31,21 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
-	session.Identify.Intents = discordgo.IntentsGuildMembers |
-		discordgo.IntentsGuildMessages |
-		discordgo.IntentsGuilds |
+	// Set all required intents
+	session.Identify.Intents = discordgo.IntentsAllWithoutPrivileged |
+		discordgo.IntentsGuildMembers |
 		discordgo.IntentsGuildPresences |
-		discordgo.IntentsMessageContent |
-		discordgo.IntentsDirectMessages |
-		discordgo.IntentsGuildMessageReactions
+		discordgo.IntentsMessageContent
+
+	// Log bot configuration
+	log.Printf("Bot intents: %d", session.Identify.Intents)
+	log.Printf("Bot permissions: %d", config.Discord.Permissions)
+
+	// Generate and log invite URL
+	inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%d&scope=bot%%20applications.commands",
+		config.Discord.ClientID,
+		config.Discord.Permissions)
+	log.Printf("Bot invite URL: %s", inviteURL)
 
 	return &Bot{
 		db:         database,
@@ -88,6 +96,12 @@ func (b *Bot) registerGuildCommands(guildID string) error {
 
 func (b *Bot) Start(ctx context.Context) error {
 	log.Println("Starting TaskBot...")
+
+	// Print bot invite URL
+	inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%d&scope=bot%%20applications.commands",
+		b.config.Discord.ClientID,
+		b.config.Discord.Permissions)
+	log.Printf("Bot invite URL: %s", inviteURL)
 
 	// Keep trying to connect until successful
 	for {
