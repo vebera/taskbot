@@ -590,8 +590,8 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 	var response strings.Builder
 	response.WriteString("# Current Status\n\n")
 	response.WriteString("```\n")
-	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n", "USER", "TASK", "TIME"))
-	response.WriteString(strings.Repeat("-", 65) + "\n")
+	response.WriteString(fmt.Sprintf("%-2s %-20s %-30s %-15s\n", "", "USER", "TASK", "TIME"))
+	response.WriteString(strings.Repeat("-", 70) + "\n")
 
 	for _, ci := range activeCheckIns {
 		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
@@ -599,21 +599,30 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 			continue
 		}
 
-		var duration string
+		var (
+			statusIcon string
+			duration   string
+		)
+
 		if ci.Task.Name == "Not checked in" {
+			statusIcon = "⚫" // Grey circle for not checked in
 			duration = "-"
 		} else {
+			statusIcon = "🟢" // Green circle for active
 			duration = formatDuration(time.Since(ci.CheckIn.StartTime))
 		}
 
-		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
+		response.WriteString(fmt.Sprintf("%-2s %-20s %-30s %-15s\n",
+			statusIcon,
 			truncateString(user.Username, 20),
 			truncateString(ci.Task.Name, 30),
 			duration,
 		))
 	}
 
-	response.WriteString("```")
+	response.WriteString("```\n")
+	response.WriteString("\n🟢 Active  ⚫ Not checked in")
+
 	respondWithSuccess(s, i, response.String())
 }
 
