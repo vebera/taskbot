@@ -581,7 +581,13 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "status")
 
-	// Get all active check-ins for this server
+	// Ensure we're in a guild
+	if i.GuildID == "" {
+		respondWithError(s, i, "This command must be used in a server")
+		return
+	}
+
+	// Get all active check-ins for THIS guild only
 	activeCheckIns, err := b.db.GetAllActiveCheckIns(i.GuildID)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving active check-ins: "+err.Error())
@@ -592,6 +598,13 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 	now := time.Now().UTC()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 
+	// Get all task history for today for THIS guild only
+	todayHistory, err := b.db.GetAllTaskHistory(i.GuildID, todayStart, now)
+	if err != nil {
+		respondWithError(s, i, "Error retrieving today's history: "+err.Error())
+		return
+	}
+
 	// Create a map to store user status information
 	type UserStatus struct {
 		username     string
@@ -601,13 +614,6 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 		totalToday   time.Duration
 	}
 	userStatuses := make(map[string]*UserStatus)
-
-	// Get all task history for today for this server
-	todayHistory, err := b.db.GetAllTaskHistory(i.GuildID, todayStart, now)
-	if err != nil {
-		respondWithError(s, i, "Error retrieving today's history: "+err.Error())
-		return
-	}
 
 	// Calculate total time for today for each user
 	for _, ci := range todayHistory {
@@ -701,6 +707,19 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "report")
+
+	// Ensure we're in a guild
+	if i.GuildID == "" {
+		respondWithError(s, i, "This command must be used in a server")
+		return
+	}
+
+	// Get users for THIS guild only
+	allUsers, err := b.db.GetGuildUsers(i.GuildID) // You'll need to create this function
+	if err != nil {
+		respondWithError(s, i, "Error retrieving users: "+err.Error())
+		return
+	}
 
 	// Add permission check
 	if !hasPermission(s, i.GuildID, i.Member.User.ID, discordgo.PermissionViewChannel) {
@@ -796,13 +815,6 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 			duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
 			userHours[ci.CheckIn.UserID.String()] += duration
 		}
-	}
-
-	// Get all users in the server
-	allUsers, err := b.db.GetAllUsers()
-	if err != nil {
-		respondWithError(s, i, "Error retrieving users: "+err.Error())
-		return
 	}
 
 	// Create a map for quick lookup

@@ -577,3 +577,17 @@ func (db *DB) UpdateTaskStatus(taskID uuid.UUID, completed bool) error {
 
 	return nil
 }
+
+// GetGuildUsers returns all users who have activity in the specified guild
+func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
+	var users []*models.User
+	err := db.QueryRow(context.Background(), `
+		SELECT DISTINCT u.* 
+		FROM users u
+		JOIN check_ins ci ON u.id = ci.user_id
+		WHERE ci.server_id = $1
+	`, guildID).Scan(
+		&users,
+	)
+	return users, err
+}
