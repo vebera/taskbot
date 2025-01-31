@@ -14,6 +14,14 @@ import (
 	"github.com/bwmarrin/discordgo"
 )
 
+var (
+	dmAllowedCommands = map[string]bool{
+		"timezone": true, // Allow timezone setting in DMs
+		"help":     true, // If you have a help command
+		"status":   true, // Allow checking status in DMs
+	}
+)
+
 type Bot struct {
 	config     *config.Config
 	db         *db.DB
@@ -61,22 +69,23 @@ func (b *Bot) registerGuildCommands(guildID string) error {
 	// Get guild info for better logging
 	guild, err := b.session.Guild(guildID)
 	if err != nil {
-		log.Printf("Error getting guild info for %s: %v", guildID, err)
+		log.Printf(formatLogMessage(guildID, "Error getting guild info: "+err.Error(), "system", "unknown"))
 		return err
 	}
-	log.Printf("Registering commands for guild: %s (Name: %s)", guildID, guild.Name)
+
+	log.Printf(formatLogMessage(guildID, "Starting command registration", "system", guild.Name))
 
 	// First, clean up existing commands
 	existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guildID)
 	if err != nil {
-		log.Printf("Error getting existing commands for guild %s (%s): %v", guild.Name, guildID, err)
+		log.Printf(formatLogMessage(guildID, "Error getting existing commands: "+err.Error(), "system", guild.Name))
 	} else {
 		for _, cmd := range existingCommands {
 			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guildID, cmd.ID)
 			if err != nil {
-				log.Printf("Error removing command %s from guild %s (%s): %v", cmd.Name, guild.Name, guildID, err)
+				log.Printf(formatLogMessage(guildID, "Error removing command: "+cmd.Name, "system", guild.Name))
 			} else {
-				log.Printf("Successfully removed command %s from guild %s (%s)", cmd.Name, guild.Name, guildID)
+				log.Printf(formatLogMessage(guildID, "Successfully removed command: "+cmd.Name, "system", guild.Name))
 			}
 		}
 	}
@@ -84,14 +93,14 @@ func (b *Bot) registerGuildCommands(guildID string) error {
 	// Register new commands
 	var registeredCommands []*discordgo.ApplicationCommand
 	for _, cmd := range commands {
-		log.Printf("Registering command %s for guild %s (%s)", cmd.Name, guild.Name, guildID)
+		log.Printf(formatLogMessage(guildID, "Registering command: "+cmd.Name, "system", guild.Name))
 		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, cmd)
 		if err != nil {
-			log.Printf("Error registering command %s for guild %s (%s): %v", cmd.Name, guild.Name, guildID, err)
+			log.Printf(formatLogMessage(guildID, "Error registering command: "+cmd.Name+", error: "+err.Error(), "system", guild.Name))
 			continue
 		}
 		registeredCommands = append(registeredCommands, registered)
-		log.Printf("Successfully registered command %s for guild %s (%s)", cmd.Name, guild.Name, guildID)
+		log.Printf(formatLogMessage(guildID, "Successfully registered command: "+cmd.Name, "system", guild.Name))
 	}
 
 	// Update the bot's command list
@@ -283,9 +292,10 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 	}()
 
-	// Validate that we're in a guild context for guild-only commands
-	if i.GuildID == "" {
-		respondWithError(s, i, "This command can only be used in a server, not in DMs")
+	// Check if command is allowed in current context
+	commandName := i.ApplicationCommandData().Name
+	if i.GuildID == "" && !dmAllowedCommands[commandName] {
+		respondWithError(s, i, fmt.Sprintf("The `/%s` command can only be used in a server", commandName))
 		return
 	}
 
@@ -297,19 +307,12 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		},
 	})
 	if err != nil {
-		log.Printf("Error acknowledging interaction: %v", err)
-		return
-	}
-
-	// Add command validation
-	if i.ApplicationCommandData().Name == "" {
-		log.Printf("Received interaction with empty command name")
-		respondWithError(s, i, "Invalid command")
+		log.Printf(formatLogMessage(i.GuildID, "Error acknowledging interaction: "+err.Error(), "", ""))
 		return
 	}
 
 	// Handle the command
-	switch i.ApplicationCommandData().Name {
+	switch commandName {
 	case "timezone":
 		b.handleTimezone(s, i)
 	case "declare":
@@ -327,7 +330,7 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 	case "globaltask":
 		b.handleGlobalTask(s, i)
 	default:
-		log.Printf("Unknown command: %s", i.ApplicationCommandData().Name)
+		log.Printf(formatLogMessage(i.GuildID, "Unknown command: "+commandName, "", ""))
 		respondWithError(s, i, "Unknown command")
 	}
 }
