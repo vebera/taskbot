@@ -174,9 +174,15 @@ func (db *DB) GetTaskByID(taskID uuid.UUID) (*models.Task, error) {
 func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			c.id, c.user_id, c.server_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description,
-			u.username  -- Add username to the query
+			COALESCE(c.id, ''),
+			u.id,
+			COALESCE(c.server_id, ''),
+			c.task_id,
+			COALESCE(c.start_time, NOW()),
+			c.end_time,
+			t.name,
+			t.description,
+			u.username
 		FROM users u
 		LEFT JOIN check_ins c ON u.id = c.user_id AND c.active = true AND c.server_id = $1
 		LEFT JOIN tasks t ON c.task_id = t.id
@@ -200,15 +206,22 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 			CheckIn: &models.CheckIn{},
 			Task:    &models.Task{},
 		}
-		var username string
-		var taskID, taskName, taskDesc sql.NullString
+		var (
+			checkInID, userID, serverIDScan sql.NullString
+			taskID                          sql.NullString
+			startTime                       sql.NullTime
+			endTime                         sql.NullTime
+			taskName, taskDesc              sql.NullString
+			username                        string
+		)
+
 		err := rows.Scan(
-			&ci.CheckIn.ID,
-			&ci.CheckIn.UserID,
-			&ci.CheckIn.ServerID,
+			&checkInID,
+			&userID,
+			&serverIDScan,
 			&taskID,
-			&ci.CheckIn.StartTime,
-			&ci.CheckIn.EndTime,
+			&startTime,
+			&endTime,
 			&taskName,
 			&taskDesc,
 			&username,
@@ -217,16 +230,34 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 			return nil, err
 		}
 
-		// Set task details if they exist
+		// Set check-in details
+		if checkInID.Valid {
+			ci.CheckIn.ID = uuid.MustParse(checkInID.String)
+		}
+		if userID.Valid {
+			ci.CheckIn.UserID = uuid.MustParse(userID.String)
+		}
+		if serverIDScan.Valid {
+			ci.CheckIn.ServerID = serverIDScan.String
+		}
 		if taskID.Valid {
-			ci.CheckIn.TaskID, _ = uuid.Parse(taskID.String)
+			ci.CheckIn.TaskID = uuid.MustParse(taskID.String)
+		}
+		if startTime.Valid {
+			ci.CheckIn.StartTime = startTime.Time
+		}
+		if endTime.Valid {
+			ci.CheckIn.EndTime = &endTime.Time
+		}
+
+		// Set task details
+		if taskName.Valid {
 			ci.Task.Name = taskName.String
-			ci.Task.Description = taskDesc.String
 		} else {
-			// If no active check-in, create an idle status
-			ci.Task = &models.Task{
-				Name: "Not checked in",
-			}
+			ci.Task.Name = "Not checked in"
+		}
+		if taskDesc.Valid {
+			ci.Task.Description = taskDesc.String
 		}
 
 		checkIns = append(checkIns, ci)
