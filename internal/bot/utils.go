@@ -31,13 +31,25 @@ func formatDuration(d time.Duration) string {
 
 // respondWithError sends an error response to the user
 func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, errMsg string) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: "Error: " + errMsg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
+	// Get username safely
+	var username string
+	if i.Member != nil && i.Member.User != nil {
+		username = i.Member.User.Username
+	} else if i.User != nil {
+		username = i.User.Username
+	} else {
+		username = "unknown"
+	}
+
+	log.Printf("Error for user %s: %s", username, errMsg)
+
+	_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: "Error: " + errMsg,
+		Flags:   discordgo.MessageFlagsEphemeral,
 	})
+	if err != nil {
+		log.Printf("Error sending error response to %s: %v", username, err)
+	}
 }
 
 // getUserFromInteraction gets or creates a user from the interaction
@@ -76,13 +88,13 @@ func formatTime(t time.Time, timezone string) string {
 
 // respondWithSuccess sends a success response to the user
 func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, msg string) {
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: msg,
-			Flags:   discordgo.MessageFlagsEphemeral,
-		},
+	_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
+		Content: msg,
+		Flags:   discordgo.MessageFlagsEphemeral,
 	})
+	if err != nil {
+		log.Printf("Error sending success response: %v", err)
+	}
 }
 
 // logCommand logs command execution to console

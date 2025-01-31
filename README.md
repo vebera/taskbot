@@ -100,6 +100,18 @@ Copy `.env.example` to `.env` and configure the following:
 - `DATABASE_URL` - PostgreSQL connection string
 - Other configuration options as needed
 
+
+## Discord Developer Portal
+Update your bot's intents in the Discord Developer Portal:
+Go to [Discord Developer Portal](https://discord.com/developers/applications)
+Select your bot
+Go to "Bot" section
+Enable ALL "Privileged Gateway Intents":
+PRESENCE INTENT
+SERVER MEMBERS INTENT
+MESSAGE CONTENT INTENT
+
+
 ## Development
 
 The project uses:

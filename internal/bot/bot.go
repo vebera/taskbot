@@ -32,7 +32,11 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 
 	session.Identify.Intents = discordgo.IntentsGuildMembers |
 		discordgo.IntentsGuildMessages |
-		discordgo.IntentsGuilds
+		discordgo.IntentsGuilds |
+		discordgo.IntentsGuildPresences |
+		discordgo.IntentsMessageContent |
+		discordgo.IntentsDirectMessages |
+		discordgo.IntentsGuildMessageReactions
 
 	return &Bot{
 		db:         database,
@@ -212,6 +216,27 @@ func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) 
 }
 
 func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Add defer to catch panics
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic in command handler: %v", r)
+			respondWithError(s, i, "An internal error occurred")
+		}
+	}()
+
+	// Add initial acknowledgment for long-running commands
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{
+			Flags: discordgo.MessageFlagsEphemeral,
+		},
+	})
+	if err != nil {
+		log.Printf("Error acknowledging interaction: %v", err)
+		return
+	}
+
+	// Handle the command
 	switch i.ApplicationCommandData().Name {
 	case "timezone":
 		b.handleTimezone(s, i)
@@ -231,5 +256,6 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		b.handleGlobalTask(s, i)
 	default:
 		log.Printf("Unknown command: %s", i.ApplicationCommandData().Name)
+		respondWithError(s, i, "Unknown command")
 	}
 }
