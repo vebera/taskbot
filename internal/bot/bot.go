@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"runtime"
 	"sync"
 	"time"
 
@@ -216,10 +217,26 @@ func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) 
 }
 
 func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	// Add defer to catch panics
+	// Add defer to catch panics with stack trace
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("Recovered from panic in command handler: %v", r)
+			// Get username for better error tracking
+			var username string
+			if i.Member != nil && i.Member.User != nil {
+				username = i.Member.User.Username
+			} else if i.User != nil {
+				username = i.User.Username
+			} else {
+				username = "unknown"
+			}
+
+			// Log the stack trace
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			log.Printf("Panic in command handler for user %s:\nError: %v\nStack Trace:\n%s",
+				username, r, string(buf[:n]))
+
+			// Respond to user
 			respondWithError(s, i, "An internal error occurred")
 		}
 	}()
@@ -233,6 +250,13 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 	})
 	if err != nil {
 		log.Printf("Error acknowledging interaction: %v", err)
+		return
+	}
+
+	// Add command validation
+	if i.ApplicationCommandData().Name == "" {
+		log.Printf("Received interaction with empty command name")
+		respondWithError(s, i, "Invalid command")
 		return
 	}
 
