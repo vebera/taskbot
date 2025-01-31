@@ -175,10 +175,18 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 	query := `
 		SELECT 
 			c.id, c.user_id, c.server_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description
-		FROM check_ins c
-		JOIN tasks t ON c.task_id = t.id
-		WHERE c.active = true AND c.server_id = $1`
+			t.name, t.description,
+			u.username  -- Add username to the query
+		FROM users u
+		LEFT JOIN check_ins c ON u.id = c.user_id AND c.active = true AND c.server_id = $1
+		LEFT JOIN tasks t ON c.task_id = t.id
+		WHERE EXISTS (
+			SELECT 1 
+			FROM check_ins ci 
+			WHERE ci.user_id = u.id 
+			AND ci.server_id = $1
+		)
+		ORDER BY u.username ASC`
 
 	rows, err := db.Query(context.Background(), query, serverID)
 	if err != nil {
@@ -192,19 +200,35 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 			CheckIn: &models.CheckIn{},
 			Task:    &models.Task{},
 		}
+		var username string
+		var taskID, taskName, taskDesc sql.NullString
 		err := rows.Scan(
 			&ci.CheckIn.ID,
 			&ci.CheckIn.UserID,
 			&ci.CheckIn.ServerID,
-			&ci.CheckIn.TaskID,
+			&taskID,
 			&ci.CheckIn.StartTime,
 			&ci.CheckIn.EndTime,
-			&ci.Task.Name,
-			&ci.Task.Description,
+			&taskName,
+			&taskDesc,
+			&username,
 		)
 		if err != nil {
 			return nil, err
 		}
+
+		// Set task details if they exist
+		if taskID.Valid {
+			ci.CheckIn.TaskID, _ = uuid.Parse(taskID.String)
+			ci.Task.Name = taskName.String
+			ci.Task.Description = taskDesc.String
+		} else {
+			// If no active check-in, create an idle status
+			ci.Task = &models.Task{
+				Name: "Not checked in",
+			}
+		}
+
 		checkIns = append(checkIns, ci)
 	}
 	return checkIns, rows.Err()
@@ -580,14 +604,38 @@ func (db *DB) UpdateTaskStatus(taskID uuid.UUID, completed bool) error {
 
 // GetGuildUsers returns all users who have activity in the specified guild
 func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
-	var users []*models.User
-	err := db.QueryRow(context.Background(), `
-		SELECT DISTINCT u.* 
+	query := `
+		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
 		FROM users u
 		JOIN check_ins ci ON u.id = ci.user_id
 		WHERE ci.server_id = $1
-	`, guildID).Scan(
-		&users,
-	)
-	return users, err
+		ORDER BY u.username ASC`
+
+	rows, err := db.Query(context.Background(), query, guildID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		user := &models.User{}
+		err := rows.Scan(
+			&user.ID,
+			&user.DiscordID,
+			&user.Username,
+			&user.Timezone,
+			&user.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return users, nil
 }

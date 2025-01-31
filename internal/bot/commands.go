@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -581,12 +580,6 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "status")
 
-	// Ensure we're in a guild
-	if i.GuildID == "" {
-		respondWithError(s, i, "This command must be used in a server")
-		return
-	}
-
 	// Get all active check-ins for THIS guild only
 	activeCheckIns, err := b.db.GetAllActiveCheckIns(i.GuildID)
 	if err != nil {
@@ -594,114 +587,33 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 		return
 	}
 
-	// Get today's start time in UTC
-	now := time.Now().UTC()
-	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var response strings.Builder
+	response.WriteString("# Current Status\n\n")
+	response.WriteString("```\n")
+	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n", "USER", "TASK", "TIME"))
+	response.WriteString(strings.Repeat("-", 65) + "\n")
 
-	// Get all task history for today for THIS guild only
-	todayHistory, err := b.db.GetAllTaskHistory(i.GuildID, todayStart, now)
-	if err != nil {
-		respondWithError(s, i, "Error retrieving today's history: "+err.Error())
-		return
-	}
-
-	// Create a map to store user status information
-	type UserStatus struct {
-		username     string
-		isActive     bool
-		currentTask  string
-		taskDuration time.Duration
-		totalToday   time.Duration
-	}
-	userStatuses := make(map[string]*UserStatus)
-
-	// Calculate total time for today for each user
-	for _, ci := range todayHistory {
-		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
-		if err != nil {
-			continue
-		}
-
-		if _, exists := userStatuses[user.ID.String()]; !exists {
-			userStatuses[user.ID.String()] = &UserStatus{
-				username: user.Username,
-			}
-		}
-
-		duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
-		userStatuses[user.ID.String()].totalToday += duration
-	}
-
-	// Update active users' current tasks and status
 	for _, ci := range activeCheckIns {
 		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
 		if err != nil {
 			continue
 		}
 
-		if _, exists := userStatuses[user.ID.String()]; !exists {
-			userStatuses[user.ID.String()] = &UserStatus{
-				username: user.Username,
-			}
+		var duration string
+		if ci.Task.Name == "Not checked in" {
+			duration = "-"
+		} else {
+			duration = formatDuration(time.Since(ci.CheckIn.StartTime))
 		}
 
-		status := userStatuses[user.ID.String()]
-		status.isActive = true
-		status.currentTask = ci.Task.Name
-		status.taskDuration = time.Since(ci.CheckIn.StartTime)
-	}
-
-	// Convert to slice for sorting
-	var statusList []*UserStatus
-	for _, status := range userStatuses {
-		statusList = append(statusList, status)
-	}
-
-	// Sort by active status (active first) and then by username
-	sort.Slice(statusList, func(i, j int) bool {
-		if statusList[i].isActive != statusList[j].isActive {
-			return statusList[i].isActive
-		}
-		return statusList[i].username < statusList[j].username
-	})
-
-	// Format the response
-	var response strings.Builder
-	response.WriteString("```\n")
-
-	// Write header
-	response.WriteString(fmt.Sprintf("%-20s %-10s %-15s %-30s %-15s\n",
-		"USER", "STATUS", "TODAY TOTAL", "CURRENT TASK", "TIME ELAPSED"))
-	response.WriteString(strings.Repeat("-", 95) + "\n")
-
-	// Write user statuses
-	for _, status := range statusList {
-		currentTask := "N/A"
-		taskDuration := ""
-		userStatus := "Offline"
-
-		if status.isActive {
-			currentTask = status.currentTask
-			taskDuration = formatDuration(status.taskDuration)
-			userStatus = "🟢 Online"
-		}
-
-		response.WriteString(fmt.Sprintf("%-20s %-10s %-15s %-30s %-15s\n",
-			truncateString(status.username, 20),
-			userStatus,
-			formatDuration(status.totalToday),
-			truncateString(currentTask, 30),
-			taskDuration,
+		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
+			truncateString(user.Username, 20),
+			truncateString(ci.Task.Name, 30),
+			duration,
 		))
 	}
 
 	response.WriteString("```")
-
-	if len(statusList) == 0 {
-		respondWithSuccess(s, i, "No activity recorded today")
-		return
-	}
-
 	respondWithSuccess(s, i, response.String())
 }
 
