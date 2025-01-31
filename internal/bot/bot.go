@@ -95,6 +95,12 @@ func (b *Bot) registerGuildCommands(guildID string) error {
 	// Register new commands
 	var registeredCommands []*discordgo.ApplicationCommand
 	for _, cmd := range commands {
+		// Make sure commands are visible to everyone except admin-only commands
+		if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions == 0 {
+			defaultPerms := int64(discordgo.PermissionViewChannel)
+			cmd.DefaultMemberPermissions = &defaultPerms
+		}
+
 		log.Printf(formatLogMessage(guildID, "Registering command: "+cmd.Name, "system", guild.Name))
 		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, cmd)
 		if err != nil {

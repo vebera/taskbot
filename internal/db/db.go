@@ -174,9 +174,9 @@ func (db *DB) GetTaskByID(taskID uuid.UUID) (*models.Task, error) {
 func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			COALESCE(c.id, ''),
+			c.id,
 			u.id,
-			COALESCE(c.server_id, ''),
+			c.server_id,
 			c.task_id,
 			COALESCE(c.start_time, NOW()),
 			c.end_time,
@@ -231,17 +231,26 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 		}
 
 		// Set check-in details
-		if checkInID.Valid {
-			ci.CheckIn.ID = uuid.MustParse(checkInID.String)
+		if checkInID.Valid && checkInID.String != "" {
+			ci.CheckIn.ID, err = uuid.Parse(checkInID.String)
+			if err != nil {
+				return nil, fmt.Errorf("invalid check-in ID: %w", err)
+			}
 		}
-		if userID.Valid {
-			ci.CheckIn.UserID = uuid.MustParse(userID.String)
+		if userID.Valid && userID.String != "" {
+			ci.CheckIn.UserID, err = uuid.Parse(userID.String)
+			if err != nil {
+				return nil, fmt.Errorf("invalid user ID: %w", err)
+			}
 		}
 		if serverIDScan.Valid {
 			ci.CheckIn.ServerID = serverIDScan.String
 		}
-		if taskID.Valid {
-			ci.CheckIn.TaskID = uuid.MustParse(taskID.String)
+		if taskID.Valid && taskID.String != "" {
+			ci.CheckIn.TaskID, err = uuid.Parse(taskID.String)
+			if err != nil {
+				return nil, fmt.Errorf("invalid task ID: %w", err)
+			}
 		}
 		if startTime.Valid {
 			ci.CheckIn.StartTime = startTime.Time
