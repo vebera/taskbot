@@ -59,7 +59,14 @@ func Load() (*Config, error) {
 			continue
 		}
 		placeholder := "${" + pair[0] + "}"
-		content = strings.ReplaceAll(content, placeholder, pair[1])
+		// For DISCORD_PERMISSIONS, convert to int64 if needed
+		if pair[0] == "DISCORD_PERMISSIONS" {
+			if perm, err := strconv.ParseInt(pair[1], 10, 64); err == nil {
+				content = strings.ReplaceAll(content, placeholder, fmt.Sprintf("%d", perm))
+			}
+		} else {
+			content = strings.ReplaceAll(content, placeholder, pair[1])
+		}
 	}
 
 	var cfg Config
