@@ -58,17 +58,25 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 
 // Helper function to register commands for a guild
 func (b *Bot) registerGuildCommands(guildID string) error {
-	log.Printf("Registering commands for guild: %s", guildID)
+	// Get guild info for better logging
+	guild, err := b.session.Guild(guildID)
+	if err != nil {
+		log.Printf("Error getting guild info for %s: %v", guildID, err)
+		return err
+	}
+	log.Printf("Registering commands for guild: %s (Name: %s)", guildID, guild.Name)
 
-	// First, clean up any existing commands
+	// First, clean up existing commands
 	existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guildID)
 	if err != nil {
-		log.Printf("Error getting existing commands for guild %s: %v", guildID, err)
+		log.Printf("Error getting existing commands for guild %s (%s): %v", guild.Name, guildID, err)
 	} else {
 		for _, cmd := range existingCommands {
 			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guildID, cmd.ID)
 			if err != nil {
-				log.Printf("Error removing old command %s from guild %s: %v", cmd.Name, guildID, err)
+				log.Printf("Error removing command %s from guild %s (%s): %v", cmd.Name, guild.Name, guildID, err)
+			} else {
+				log.Printf("Successfully removed command %s from guild %s (%s)", cmd.Name, guild.Name, guildID)
 			}
 		}
 	}
@@ -76,14 +84,14 @@ func (b *Bot) registerGuildCommands(guildID string) error {
 	// Register new commands
 	var registeredCommands []*discordgo.ApplicationCommand
 	for _, cmd := range commands {
-		log.Printf("Registering command: %s", cmd.Name)
+		log.Printf("Registering command %s for guild %s (%s)", cmd.Name, guild.Name, guildID)
 		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, cmd)
 		if err != nil {
-			log.Printf("Error registering command %s for guild %s: %v", cmd.Name, guildID, err)
+			log.Printf("Error registering command %s for guild %s (%s): %v", cmd.Name, guild.Name, guildID, err)
 			continue
 		}
 		registeredCommands = append(registeredCommands, registered)
-		log.Printf("Successfully registered command: %s", cmd.Name)
+		log.Printf("Successfully registered command %s for guild %s (%s)", cmd.Name, guild.Name, guildID)
 	}
 
 	// Update the bot's command list
@@ -176,16 +184,26 @@ func (b *Bot) Shutdown() error {
 	// Remove commands
 	log.Println("Removing Discord commands...")
 	for _, guild := range b.session.State.Guilds {
-		log.Printf("Removing commands from guild: %s", guild.ID)
+		// Get guild info for better logging
+		guildInfo, err := b.session.Guild(guild.ID)
+		guildName := "unknown"
+		if err == nil {
+			guildName = guildInfo.Name
+		}
+
+		log.Printf("Removing commands from guild: %s (Name: %s)", guild.ID, guildName)
+
 		registeredCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guild.ID)
 		if err != nil {
-			log.Printf("Error getting commands for guild %s: %v", guild.ID, err)
+			log.Printf("Error getting commands for guild %s (%s): %v", guildName, guild.ID, err)
 			continue
 		}
 		for _, cmd := range registeredCommands {
 			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guild.ID, cmd.ID)
 			if err != nil {
-				log.Printf("Error removing command %s from guild %s: %v", cmd.Name, guild.ID, err)
+				log.Printf("Error removing command %s from guild %s (%s): %v", cmd.Name, guildName, guild.ID, err)
+			} else {
+				log.Printf("Successfully removed command %s from guild %s (%s)", cmd.Name, guildName, guild.ID)
 			}
 		}
 	}
@@ -217,16 +235,20 @@ func (b *Bot) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 }
 
 func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	log.Printf("Bot joined new guild: %s", g.ID)
+	log.Printf("Bot joined new guild: %s (Name: %s)", g.ID, g.Name)
 
 	// Initialize settings for new guild
 	if _, err := b.db.GetOrCreateServerSettings(g.ID); err != nil {
-		log.Printf("Error initializing settings for guild %s: %v", g.ID, err)
+		log.Printf("Error initializing settings for guild %s (%s): %v", g.Name, g.ID, err)
+	} else {
+		log.Printf("Successfully initialized settings for guild %s (%s)", g.Name, g.ID)
 	}
 
 	// Register commands for the new guild
 	if err := b.registerGuildCommands(g.ID); err != nil {
-		log.Printf("Error registering commands for new guild %s: %v", g.ID, err)
+		log.Printf("Error registering commands for guild %s (%s): %v", g.Name, g.ID, err)
+	} else {
+		log.Printf("Successfully registered all commands for guild %s (%s)", g.Name, g.ID)
 	}
 }
 
@@ -234,26 +256,38 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 	// Add defer to catch panics with stack trace
 	defer func() {
 		if r := recover(); r != nil {
-			// Get username for better error tracking
-			var username string
+			// Get username and context for better error tracking
+			var username, context string
 			if i.Member != nil && i.Member.User != nil {
 				username = i.Member.User.Username
+				if guild, err := s.Guild(i.GuildID); err == nil {
+					context = fmt.Sprintf("guild %s (%s)", guild.Name, i.GuildID)
+				} else {
+					context = fmt.Sprintf("guild ID %s", i.GuildID)
+				}
 			} else if i.User != nil {
 				username = i.User.Username
+				context = "DM"
 			} else {
 				username = "unknown"
+				context = "unknown context"
 			}
 
-			// Log the stack trace
+			// Log the stack trace with context
 			buf := make([]byte, 4096)
 			n := runtime.Stack(buf, false)
-			log.Printf("Panic in command handler for user %s:\nError: %v\nStack Trace:\n%s",
-				username, r, string(buf[:n]))
+			log.Printf("Panic in command handler for user %s in %s:\nError: %v\nStack Trace:\n%s",
+				username, context, r, string(buf[:n]))
 
-			// Respond to user
 			respondWithError(s, i, "An internal error occurred")
 		}
 	}()
+
+	// Validate that we're in a guild context for guild-only commands
+	if i.GuildID == "" {
+		respondWithError(s, i, "This command can only be used in a server, not in DMs")
+		return
+	}
 
 	// Add initial acknowledgment for long-running commands
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{

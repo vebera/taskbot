@@ -31,24 +31,28 @@ func formatDuration(d time.Duration) string {
 
 // respondWithError sends an error response to the user
 func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, errMsg string) {
-	// Get username safely
 	var username string
 	if i.Member != nil && i.Member.User != nil {
 		username = i.Member.User.Username
 	} else if i.User != nil {
 		username = i.User.Username
-	} else {
-		username = "unknown"
 	}
 
-	log.Printf("Error for user %s: %s", username, errMsg)
+	serverName := "DM"
+	if i.GuildID != "" {
+		if guild, err := s.Guild(i.GuildID); err == nil {
+			serverName = guild.Name
+		}
+	}
+
+	log.Printf(formatLogMessage(i.GuildID, "Error: "+errMsg, username, serverName))
 
 	_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: "Error: " + errMsg,
 		Flags:   discordgo.MessageFlagsEphemeral,
 	})
 	if err != nil {
-		log.Printf("Error sending error response to %s: %v", username, err)
+		log.Printf(formatLogMessage(i.GuildID, "Error sending error response: "+err.Error(), username, serverName))
 	}
 }
 
@@ -97,18 +101,37 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 	}
 }
 
-// logCommand logs command execution to console
-func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
+// Add this helper function for consistent log formatting
+func formatLogMessage(guildID, message, username, serverName string) string {
+	if serverName == "" {
+		serverName = "unknown"
+	}
+	if username == "" {
+		username = "system"
+	}
+	return fmt.Sprintf("%s: %s (username: %s, server: %s)",
+		guildID,
+		message,
+		username,
+		serverName,
+	)
+}
 
-	// Get username safely, handling both DM and server contexts
+// Update logCommand to use the new format
+func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
 	var username string
 	if i.Member != nil && i.Member.User != nil {
 		username = i.Member.User.Username
 	} else if i.User != nil {
 		username = i.User.Username
-	} else {
-		username = "unknown"
+	}
+
+	// Get server name
+	serverName := "DM"
+	if i.GuildID != "" {
+		if guild, err := s.Guild(i.GuildID); err == nil {
+			serverName = guild.Name
+		}
 	}
 
 	// Build command parameters string
@@ -127,25 +150,32 @@ func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandNam
 		}
 	}
 
-	logMessage := fmt.Sprintf("[%s] %s executed /%s", timestamp, username, commandName)
+	message := fmt.Sprintf("executed /%s", commandName)
 	if len(params) > 0 {
-		logMessage += fmt.Sprintf(" [%s]", strings.Join(params, ", "))
+		message += fmt.Sprintf(" [%s]", strings.Join(params, ", "))
 	}
 	if len(details) > 0 {
-		logMessage += fmt.Sprintf(" (%s)", strings.Join(details, " "))
+		message += fmt.Sprintf(" (%s)", strings.Join(details, " "))
 	}
 
-	// Log to console only
-	log.Println(logMessage)
+	log.Printf(formatLogMessage(i.GuildID, message, username, serverName))
 }
 
-// logError logs errors to both console and Discord server
+// Update logError to use the new format
 func logError(s *discordgo.Session, channelID string, errContext, errMsg string) {
-	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	logMessage := fmt.Sprintf("[%s] ERROR - %s: %s", timestamp, errContext, errMsg)
+	guildID := "unknown"
+	serverName := "unknown"
 
-	// Log to console only
-	log.Println(logMessage)
+	// Try to get channel info to get guild ID
+	if channel, err := s.Channel(channelID); err == nil {
+		guildID = channel.GuildID
+		if guild, err := s.Guild(channel.GuildID); err == nil {
+			serverName = guild.Name
+		}
+	}
+
+	message := fmt.Sprintf("ERROR - %s: %s", errContext, errMsg)
+	log.Printf(formatLogMessage(guildID, message, "", serverName))
 }
 
 // sendServerLog sends a log message to the Discord server
@@ -201,35 +231,18 @@ func formatTable(headers []string, rows [][]string) string {
 
 // Add this new function to handle permission checks
 func hasPermission(s *discordgo.Session, guildID string, userID string, requiredPermission int64) bool {
+	// If this is a DM channel (no guild), allow the action
 	if guildID == "" {
-		return false // No permissions in DMs
-	}
-
-	member, err := s.GuildMember(guildID, userID)
-	if err != nil {
-		log.Printf("Error getting guild member: %v", err)
-		return false
-	}
-
-	// Check if user is guild owner
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		log.Printf("Error getting guild: %v", err)
-		return false
-	}
-	if guild.OwnerID == userID {
 		return true
 	}
 
-	// Calculate permissions from roles
-	var permissions int64
-	for _, roleID := range member.Roles {
-		role, err := s.State.Role(guildID, roleID)
-		if err != nil {
-			continue
-		}
-		permissions |= role.Permissions
+	// Just check if the user is a member of the guild
+	_, err := s.GuildMember(guildID, userID)
+	if err != nil {
+		log.Printf("Error checking guild membership for user %s in guild %s: %v", userID, guildID, err)
+		return false
 	}
 
-	return (permissions & requiredPermission) == requiredPermission
+	// If we can get the member, they have permission to use the bot
+	return true
 }

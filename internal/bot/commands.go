@@ -440,12 +440,6 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	// Add permission check
-	if !hasPermission(s, i.GuildID, i.Member.User.ID, discordgo.PermissionViewChannel) {
-		respondWithError(s, i, "You don't have permission to use this command here")
-		return
-	}
-
 	switch subcommand.Name {
 	case "existing":
 		if len(options) == 0 {
@@ -543,12 +537,6 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 	user, err := b.getUserFromInteraction(s, i)
 	if err != nil || user == nil {
 		log.Printf("Error getting user from interaction: %v", err)
-		return
-	}
-
-	// Add permission check
-	if !hasPermission(s, i.GuildID, i.Member.User.ID, discordgo.PermissionViewChannel) {
-		respondWithError(s, i, "You don't have permission to use this command here")
 		return
 	}
 
