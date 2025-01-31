@@ -1,5 +1,6 @@
 services:
   taskbot:
+    container_name: taskbot
     build:
       context: .
       dockerfile: Dockerfile
