@@ -387,8 +387,29 @@ func (b *Bot) handleUsernameAutocomplete(s *discordgo.Session, i *discordgo.Inte
 }
 
 func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	// Validate interaction data
+	if i.ApplicationCommandData().Options == nil || len(i.ApplicationCommandData().Options) == 0 {
+		respondWithError(s, i, "Invalid command options")
+		return
+	}
+
 	subcommand := i.ApplicationCommandData().Options[0]
+	if subcommand == nil {
+		respondWithError(s, i, "Invalid subcommand")
+		return
+	}
+
+	// Validate member data
+	if i.Member == nil || i.Member.User == nil {
+		respondWithError(s, i, "Could not determine user information")
+		return
+	}
+
 	options := subcommand.Options
+	if options == nil {
+		respondWithError(s, i, "Missing required options")
+		return
+	}
 
 	var task *models.Task
 	var err error
@@ -396,6 +417,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 	user, err := b.getUserFromInteraction(s, i)
 	if err != nil || user == nil {
 		log.Printf("Error getting user from interaction: %v", err)
+		respondWithError(s, i, "Could not get user information")
 		return
 	}
 
@@ -407,11 +429,17 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	switch subcommand.Name {
 	case "existing":
+		if len(options) == 0 {
+			respondWithError(s, i, "Missing task ID")
+			return
+		}
+
 		taskID, err := uuid.Parse(options[0].StringValue())
 		if err != nil {
 			respondWithError(s, i, "Invalid task ID")
 			return
 		}
+
 		task, err = b.db.GetTaskByID(taskID)
 		if err != nil {
 			respondWithError(s, i, "Error getting task: "+err.Error())
@@ -423,6 +451,11 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		}
 
 	case "new":
+		if len(options) == 0 {
+			respondWithError(s, i, "Missing task name")
+			return
+		}
+
 		taskName := options[0].StringValue()
 		var description string
 		if len(options) > 1 {
@@ -443,6 +476,9 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 			respondWithError(s, i, "Error creating task: "+err.Error())
 			return
 		}
+	default:
+		respondWithError(s, i, "Invalid subcommand")
+		return
 	}
 
 	logCommand(s, i, "checkin", task.Name)
