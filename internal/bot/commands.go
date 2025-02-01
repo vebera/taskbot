@@ -1,10 +1,8 @@
 package bot
 
 import (
-	"bytes"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -626,306 +624,6 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 	respondWithSuccess(s, i, response.String())
 }
 
-func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate) {
-	logCommand(s, i, "report")
-
-	// Ensure we're in a guild
-	if i.GuildID == "" {
-		respondWithError(s, i, "This command must be used in a server")
-		return
-	}
-
-	// Get users for THIS guild only
-	allUsers, err := b.db.GetGuildUsers(i.GuildID) // You'll need to create this function
-	if err != nil {
-		respondWithError(s, i, "Error retrieving users: "+err.Error())
-		return
-	}
-
-	// Add permission check
-	if !hasPermission(s, i.GuildID, i.Member.User.ID, discordgo.PermissionViewChannel) {
-		respondWithError(s, i, "You don't have permission to use this command here")
-		return
-	}
-
-	period := i.ApplicationCommandData().Options[0].StringValue()
-	format := "text"     // default format
-	filterUsername := "" // default to no filter
-
-	// Get format and username filter if provided
-	for _, opt := range i.ApplicationCommandData().Options {
-		switch opt.Name {
-		case "format":
-			format = opt.StringValue()
-		case "username":
-			filterUsername = opt.StringValue()
-		}
-	}
-
-	// Get user ID safely
-	var userID string
-	if i.Member != nil && i.Member.User != nil {
-		userID = i.Member.User.ID
-	} else if i.User != nil {
-		userID = i.User.ID
-	} else {
-		respondWithError(s, i, "Could not determine user information")
-		return
-	}
-
-	// Check if user is admin when requesting CSV
-	isUserAdmin := isAdmin(s, i.GuildID, userID)
-	if format == "csv" && !isUserAdmin {
-		log.Printf("CSV access denied for user %s in guild %s", userID, i.GuildID)
-		respondWithError(s, i, "CSV format is only available for administrators")
-		return
-	}
-
-	now := time.Now()
-	var startDate time.Time
-
-	// Use a default timezone or retrieve from interaction
-	loc, err := time.LoadLocation("UTC") // Default to UTC
-	if err != nil {
-		respondWithError(s, i, "Error loading default timezone: "+err.Error())
-		return
-	}
-
-	now = now.In(loc)
-	switch period {
-	case "today":
-		startDate = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	case "week":
-		startDate = now.AddDate(0, 0, -7)
-	case "month":
-		startDate = now.AddDate(0, -1, 0)
-	case "last_month":
-		startDate = time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	case "month_2":
-		startDate = time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	case "month_3":
-		startDate = time.Date(now.Year(), now.Month()-3, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month()-2, 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	case "month_4":
-		startDate = time.Date(now.Year(), now.Month()-4, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month()-3, 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	case "month_5":
-		startDate = time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month()-4, 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	case "month_6":
-		startDate = time.Date(now.Year(), now.Month()-6, 1, 0, 0, 0, 0, loc)
-		now = time.Date(now.Year(), now.Month()-5, 1, 0, 0, 0, 0, loc).Add(-time.Second)
-	default:
-		respondWithError(s, i, "Invalid time period")
-		return
-	}
-
-	// Get all task history for this server
-	history, err := b.db.GetAllTaskHistory(i.GuildID, startDate, now)
-	if err != nil {
-		respondWithError(s, i, "Error retrieving task history: "+err.Error())
-		return
-	}
-
-	// Then add user aggregation:
-	userHours := make(map[string]time.Duration)
-	for _, ci := range history {
-		if ci.CheckIn.EndTime != nil {
-			duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
-			userHours[ci.CheckIn.UserID.String()] += duration
-		}
-	}
-
-	// Create a map for quick lookup
-	userMap := make(map[uuid.UUID]*models.User)
-	for _, user := range allUsers {
-		userMap[user.ID] = user
-	}
-
-	// Build report including all users
-	var reportRows [][]string
-	for userID, duration := range userHours {
-		uid, _ := uuid.Parse(userID)
-		if user, exists := userMap[uid]; exists {
-			reportRows = append(reportRows, []string{
-				user.Username,
-				formatDuration(duration),
-				strconv.Itoa(len(history)),
-			})
-			delete(userMap, uid) // Remove tracked users
-		}
-	}
-
-	// Add users with 0 hours
-	for _, user := range userMap {
-		reportRows = append(reportRows, []string{
-			user.Username,
-			"0h 0m",
-			"0",
-		})
-	}
-
-	if format == "csv" {
-		// Create CSV content
-		var csvContent strings.Builder
-		csvContent.WriteString("User,Duration,Task Count\n")
-
-		for _, row := range reportRows {
-			csvContent.WriteString(fmt.Sprintf("%s,%s,%s\n", row[0], row[1], row[2]))
-		}
-
-		// Create a temporary file for the CSV
-		tmpFile, err := os.CreateTemp("", "task_report_*.csv")
-		if err != nil {
-			respondWithError(s, i, "Error creating CSV file: "+err.Error())
-			return
-		}
-		defer os.Remove(tmpFile.Name())
-
-		if _, err := tmpFile.WriteString(csvContent.String()); err != nil {
-			respondWithError(s, i, "Error writing CSV file: "+err.Error())
-			return
-		}
-		tmpFile.Close()
-
-		// Send the file
-		file := &discordgo.File{
-			Name:        fmt.Sprintf("task_report_%s.csv", period),
-			ContentType: "text/csv",
-			Reader:      bytes.NewReader([]byte(csvContent.String())),
-		}
-
-		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-			Type: discordgo.InteractionResponseChannelMessageWithSource,
-			Data: &discordgo.InteractionResponseData{
-				Files: []*discordgo.File{file},
-				Flags: discordgo.MessageFlagsEphemeral,
-			},
-		})
-		return
-	}
-
-	// Original text format response
-	var response strings.Builder
-	response.WriteString(fmt.Sprintf("# Task history for %s\n\n", period))
-	response.WriteString("```\n")
-
-	// Write header
-	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n", "USER", "TASK", "TIME", "STATUS"))
-	response.WriteString(strings.Repeat("-", 79) + "\n")
-
-	// Filter usernames if a specific username was requested
-	if filterUsername != "" {
-		filteredRows := make([][]string, 0)
-		for _, row := range reportRows {
-			if row[0] == filterUsername {
-				filteredRows = append(filteredRows, row)
-				break
-			}
-		}
-		reportRows = filteredRows
-	}
-
-	// Format each user's tasks
-	for _, row := range reportRows {
-		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n",
-			truncateString(row[0], 20),
-			truncateString(row[1], 30),
-			row[2],
-			row[1],
-		))
-	}
-
-	response.WriteString("```")
-	respondWithSuccess(s, i, response.String())
-}
-
-// Helper function to check if a user is an admin
-func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
-	// If this is a DM channel (no guild), check if the user is a bot owner
-	if guildID == "" {
-		// In DMs, we consider the user an admin if they have admin permissions in any mutual guild
-		guilds, err := s.UserGuilds(100, "", "")
-		if err != nil {
-			log.Printf("Error getting user guilds: %v", err)
-			return false
-		}
-
-		for _, guild := range guilds {
-			member, err := s.GuildMember(guild.ID, userID)
-			if err != nil {
-				continue
-			}
-
-			// Get guild to check roles
-			g, err := s.Guild(guild.ID)
-			if err != nil {
-				continue
-			}
-
-			// Check if user is the guild owner
-			if g.OwnerID == userID {
-				log.Printf("User %s is the owner of guild %s", userID, guild.ID)
-				return true
-			}
-
-			// Check roles for admin permissions
-			for _, roleID := range member.Roles {
-				for _, role := range g.Roles {
-					if role.ID == roleID {
-						if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
-							return true
-						}
-						break
-					}
-				}
-			}
-		}
-		return false
-	}
-
-	// For guild channels, check the guild roles
-	member, err := s.GuildMember(guildID, userID)
-	if err != nil {
-		log.Printf("Error getting guild member: %v", err)
-		return false
-	}
-
-	// Get guild to check roles
-	guild, err := s.Guild(guildID)
-	if err != nil {
-		log.Printf("Error getting guild: %v", err)
-		return false
-	}
-
-	// First check if user is the guild owner
-	if guild.OwnerID == userID {
-		log.Printf("User %s is the owner of guild %s", userID, guildID)
-		return true
-	}
-
-	// Check each role the user has
-	for _, roleID := range member.Roles {
-		for _, role := range guild.Roles {
-			if role.ID == roleID {
-				// Log role details for debugging
-				log.Printf("Checking role %s (ID: %s) with permissions: %d", role.Name, role.ID, role.Permissions)
-
-				if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
-					log.Printf("User %s is admin via role %s", userID, role.Name)
-					return true
-				}
-				break
-			}
-		}
-	}
-
-	log.Printf("User %s is not an admin in guild %s", userID, guildID)
-	return false
-}
-
 func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	options := i.ApplicationCommandData().Options
 	taskID, err := uuid.Parse(options[0].StringValue())
@@ -1183,4 +881,88 @@ func (b *Bot) handleDeclare(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	respondWithSuccess(s, i, fmt.Sprintf("Declared %s spent on task: %s%s",
 		formatDuration(duration), task.Name, checkoutMsg))
+}
+
+// Helper function to check if a user is an admin
+func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
+	// If this is a DM channel (no guild), check if the user is a bot owner
+	if guildID == "" {
+		// In DMs, we consider the user an admin if they have admin permissions in any mutual guild
+		guilds, err := s.UserGuilds(100, "", "")
+		if err != nil {
+			log.Printf("Error getting user guilds: %v", err)
+			return false
+		}
+
+		for _, guild := range guilds {
+			member, err := s.GuildMember(guild.ID, userID)
+			if err != nil {
+				continue
+			}
+
+			// Get guild to check roles
+			g, err := s.Guild(guild.ID)
+			if err != nil {
+				continue
+			}
+
+			// Check if user is the guild owner
+			if g.OwnerID == userID {
+				log.Printf("User %s is the owner of guild %s", userID, guild.ID)
+				return true
+			}
+
+			// Check roles for admin permissions
+			for _, roleID := range member.Roles {
+				for _, role := range g.Roles {
+					if role.ID == roleID {
+						if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
+							return true
+						}
+						break
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	// For guild channels, check the guild roles
+	member, err := s.GuildMember(guildID, userID)
+	if err != nil {
+		log.Printf("Error getting guild member: %v", err)
+		return false
+	}
+
+	// Get guild to check roles
+	guild, err := s.Guild(guildID)
+	if err != nil {
+		log.Printf("Error getting guild: %v", err)
+		return false
+	}
+
+	// First check if user is the guild owner
+	if guild.OwnerID == userID {
+		log.Printf("User %s is the owner of guild %s", userID, guildID)
+		return true
+	}
+
+	// Check each role the user has
+	for _, roleID := range member.Roles {
+		for _, role := range guild.Roles {
+			if role.ID == roleID {
+				// Log role details for debugging
+				log.Printf("Checking role %s (ID: %s) with permissions: %d", role.Name, role.ID, role.Permissions)
+
+				if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
+					log.Printf("User %s is admin via role %s", userID, role.Name)
+					return true
+				}
+				break
+			}
+		}
+	}
+
+	log.Printf("User %s is not an admin in guild %s", userID, guildID)
+	return false
 }
