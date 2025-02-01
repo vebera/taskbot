@@ -111,6 +111,9 @@ PRESENCE INTENT
 SERVER MEMBERS INTENT
 MESSAGE CONTENT INTENT
 
+## Database
+
+The database is a PostgreSQL database located at https://supabase.com/dashboard/project/nbdfcfsdkqdyeftrgemi
 
 ## Development
 

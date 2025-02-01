@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -112,10 +113,23 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// Then add user aggregation:
 	userHours := make(map[string]time.Duration)
+	userTasks := make(map[string]map[uuid.UUID]time.Duration) // Track time per task for each user
+	taskNames := make(map[uuid.UUID]string)                   // Map to store task names
+	userIDs := make(map[string]uuid.UUID)                     // Map Discord IDs to UUIDs
+
 	for _, ci := range history {
 		if ci.CheckIn.EndTime != nil {
 			duration := ci.CheckIn.EndTime.Sub(ci.CheckIn.StartTime)
 			userHours[ci.CheckIn.UserID.String()] += duration
+
+			// Track individual task times
+			if userTasks[ci.CheckIn.UserID.String()] == nil {
+				userTasks[ci.CheckIn.UserID.String()] = make(map[uuid.UUID]time.Duration)
+			}
+			userTasks[ci.CheckIn.UserID.String()][ci.CheckIn.TaskID] += duration
+
+			// Store task name
+			taskNames[ci.CheckIn.TaskID] = ci.Task.Name
 		}
 	}
 
@@ -130,35 +144,90 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 	userMap := make(map[uuid.UUID]*models.User)
 	for _, user := range allUsers {
 		userMap[user.ID] = user
+		userIDs[user.DiscordID] = user.ID
 	}
 
 	// Build report including all users
 	var reportRows [][]string
-	for userID, duration := range userHours {
-		uid, _ := uuid.Parse(userID)
-		if user, exists := userMap[uid]; exists {
+	if filterUsername != "" {
+		// Single user report - show task breakdown
+		for userID, taskDurations := range userTasks {
+			uid, _ := uuid.Parse(userID)
+			user, exists := userMap[uid]
+			// Debug logging to understand the values
+			log.Printf("Comparing user %s (Discord ID: %s) with filter %s",
+				user.Username, user.DiscordID, filterUsername)
+
+			if !exists {
+				log.Printf("User %s not found in userMap", userID)
+				continue
+			}
+
+			// Check if this is the user we're looking for
+			if user.DiscordID != filterUsername {
+				log.Printf("User %s (%s) doesn't match filter %s",
+					user.Username, user.DiscordID, filterUsername)
+				continue
+			}
+
+			// Add a row for each task
+			for taskID, duration := range taskDurations {
+				taskName := taskNames[taskID]
+				reportRows = append(reportRows, []string{
+					user.Username,
+					taskName,
+					formatDuration(duration),
+				})
+			}
+		}
+	} else {
+		// All users report - show total time per user
+		for userID, duration := range userHours {
+			uid, _ := uuid.Parse(userID)
+			if user, exists := userMap[uid]; exists {
+				reportRows = append(reportRows, []string{
+					user.Username,
+					formatDuration(duration),
+					strconv.Itoa(len(userTasks[userID])), // Count of unique tasks
+				})
+				delete(userMap, uid) // Remove tracked users
+			}
+		}
+
+		// Add users with 0 hours
+		for _, user := range userMap {
 			reportRows = append(reportRows, []string{
 				user.Username,
-				formatDuration(duration),
-				strconv.Itoa(len(history)),
+				"0h 0m",
+				"0",
 			})
-			delete(userMap, uid) // Remove tracked users
 		}
 	}
 
-	// Add users with 0 hours
-	for _, user := range userMap {
-		reportRows = append(reportRows, []string{
-			user.Username,
-			"0h 0m",
-			"0",
-		})
+	// Sort rows
+	sort.Slice(reportRows, func(i, j int) bool {
+		if reportRows[i][0] != reportRows[j][0] {
+			return reportRows[i][0] < reportRows[j][0]
+		}
+		return reportRows[i][1] < reportRows[j][1]
+	})
+
+	// Prepare the report title based on whether it's filtered
+	reportTitle := fmt.Sprintf("Task history for %s", period)
+	if filterUsername != "" {
+		if user, exists := userMap[userIDs[filterUsername]]; exists {
+			reportTitle = fmt.Sprintf("Task history for %s - %s", user.Username, period)
+		}
 	}
 
 	if format == "csv" {
 		// Create CSV content
 		var csvContent strings.Builder
-		csvContent.WriteString("User,Duration,Task Count\n")
+		if filterUsername != "" {
+			csvContent.WriteString("User,Task,Duration\n")
+		} else {
+			csvContent.WriteString("User,Total Duration,Task Count\n")
+		}
 
 		for _, row := range reportRows {
 			csvContent.WriteString(fmt.Sprintf("%s,%s,%s\n", row[0], row[1], row[2]))
@@ -183,33 +252,32 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// Original text format response
 	var response strings.Builder
-	response.WriteString(fmt.Sprintf("# Task history for %s\n\n", period))
+	response.WriteString(fmt.Sprintf("# %s\n\n", reportTitle))
 	response.WriteString("```\n")
 
 	// Write header
-	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n", "USER", "TASK", "TIME", "STATUS"))
-	response.WriteString(strings.Repeat("-", 79) + "\n")
-
-	// Filter usernames if a specific username was requested
 	if filterUsername != "" {
-		filteredRows := make([][]string, 0)
-		for _, row := range reportRows {
-			if row[0] == filterUsername {
-				filteredRows = append(filteredRows, row)
-				break
-			}
-		}
-		reportRows = filteredRows
+		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n", "USER", "TASK", "DURATION"))
+	} else {
+		response.WriteString(fmt.Sprintf("%-20s %-15s %-10s\n", "USER", "TOTAL TIME", "TASKS"))
 	}
+	response.WriteString(strings.Repeat("-", 79) + "\n")
 
 	// Format each user's tasks
 	for _, row := range reportRows {
-		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s %s\n",
-			truncateString(row[0], 20),
-			truncateString(row[1], 30),
-			row[2],
-			row[1],
-		))
+		if filterUsername != "" {
+			response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
+				truncateString(row[0], 20),
+				truncateString(row[1], 30),
+				row[2],
+			))
+		} else {
+			response.WriteString(fmt.Sprintf("%-20s %-15s %-10s\n",
+				truncateString(row[0], 20),
+				row[1],
+				row[2],
+			))
+		}
 	}
 
 	response.WriteString("```")

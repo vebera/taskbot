@@ -47,6 +47,16 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages
 
+	// Define required permissions
+	requiredPermissions := int64(
+		discordgo.PermissionViewChannel |
+			discordgo.PermissionSendMessages |
+			discordgo.PermissionReadMessageHistory |
+			discordgo.PermissionUseSlashCommands |
+			discordgo.PermissionManageRoles)
+
+	config.Discord.Permissions = requiredPermissions
+
 	// Log configuration details
 	log.Printf("Bot intents: %d", session.Identify.Intents)
 	log.Printf("Bot permissions: %d", config.Discord.Permissions)
