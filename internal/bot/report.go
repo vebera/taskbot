@@ -168,19 +168,17 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 			}
 		}
 	} else {
-		// All users report - show task breakdown for everyone
+		// All users report - show total time and task count for each user
 		for userID, taskDurations := range userTasks {
 			uid, _ := uuid.Parse(userID)
 			if user, exists := userMap[uid]; exists {
-				// Add a row for each task
-				for taskID, duration := range taskDurations {
-					taskName := taskNames[taskID]
-					reportRows = append(reportRows, []string{
-						user.Username,
-						taskName,
-						formatDuration(duration),
-					})
-				}
+				totalDuration := userHours[userID]
+				taskCount := len(taskDurations)
+				reportRows = append(reportRows, []string{
+					user.Username,
+					formatDuration(totalDuration),
+					fmt.Sprintf("%d", taskCount),
+				})
 				delete(userMap, uid) // Remove tracked users
 			}
 		}
@@ -189,8 +187,8 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		for _, user := range userMap {
 			reportRows = append(reportRows, []string{
 				user.Username,
-				"No tasks",
-				"0h 0m",
+				"0h 0m 0s",
+				"0",
 			})
 		}
 	}
