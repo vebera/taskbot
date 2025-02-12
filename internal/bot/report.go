@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -154,19 +153,7 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		for userID, taskDurations := range userTasks {
 			uid, _ := uuid.Parse(userID)
 			user, exists := userMap[uid]
-			// Debug logging to understand the values
-			log.Printf("Comparing user %s (Discord ID: %s) with filter %s",
-				user.Username, user.DiscordID, filterUsername)
-
-			if !exists {
-				log.Printf("User %s not found in userMap", userID)
-				continue
-			}
-
-			// Check if this is the user we're looking for
-			if user.DiscordID != filterUsername {
-				log.Printf("User %s (%s) doesn't match filter %s",
-					user.Username, user.DiscordID, filterUsername)
+			if !exists || user.DiscordID != filterUsername {
 				continue
 			}
 
@@ -181,15 +168,19 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 			}
 		}
 	} else {
-		// All users report - show total time per user
-		for userID, duration := range userHours {
+		// All users report - show task breakdown for everyone
+		for userID, taskDurations := range userTasks {
 			uid, _ := uuid.Parse(userID)
 			if user, exists := userMap[uid]; exists {
-				reportRows = append(reportRows, []string{
-					user.Username,
-					formatDuration(duration),
-					strconv.Itoa(len(userTasks[userID])), // Count of unique tasks
-				})
+				// Add a row for each task
+				for taskID, duration := range taskDurations {
+					taskName := taskNames[taskID]
+					reportRows = append(reportRows, []string{
+						user.Username,
+						taskName,
+						formatDuration(duration),
+					})
+				}
 				delete(userMap, uid) // Remove tracked users
 			}
 		}
@@ -198,8 +189,8 @@ func (b *Bot) handleReport(s *discordgo.Session, i *discordgo.InteractionCreate)
 		for _, user := range userMap {
 			reportRows = append(reportRows, []string{
 				user.Username,
+				"No tasks",
 				"0h 0m",
-				"0",
 			})
 		}
 	}

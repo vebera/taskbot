@@ -38,21 +38,26 @@ func respondWithError(s *discordgo.Session, i *discordgo.InteractionCreate, errM
 		username = i.User.Username
 	}
 
-	serverName := "DM"
-	if i.GuildID != "" {
-		if guild, err := s.Guild(i.GuildID); err == nil {
-			serverName = guild.Name
-		}
-	}
+	serverName := getServerName(s, i.GuildID)
 
-	log.Printf(formatLogMessage(i.GuildID, "Error: "+errMsg, username, serverName))
+	log.Printf(formatLogMessage(
+		i.GuildID,
+		"Error: "+errMsg,
+		username,
+		serverName,
+	))
 
 	_, err := s.FollowupMessageCreate(i.Interaction, true, &discordgo.WebhookParams{
 		Content: "Error: " + errMsg,
 		Flags:   discordgo.MessageFlagsEphemeral,
 	})
 	if err != nil {
-		log.Printf(formatLogMessage(i.GuildID, "Error sending error response: "+err.Error(), username, serverName))
+		log.Printf(formatLogMessage(
+			i.GuildID,
+			"Error sending error response: "+err.Error(),
+			username,
+			serverName,
+		))
 	}
 }
 
@@ -101,24 +106,38 @@ func respondWithSuccess(s *discordgo.Session, i *discordgo.InteractionCreate, ms
 	}
 }
 
-// Add this helper function for consistent log formatting
+// Update formatLogMessage to put username after server name
 func formatLogMessage(guildID, message, username, serverName string) string {
 	if serverName == "" {
-		serverName = "unknown"
+		serverName = "DM"
+		if guildID != "" {
+			serverName = guildID // Fallback to ID if name not provided
+		}
 	}
 	if username == "" {
-		username = "system"
+		username = "unknown"
 	}
-	return fmt.Sprintf("%s: %s (username: %s, server: %s)",
+	return fmt.Sprintf("%s [%s]: %s (server: %s)",
 		guildID,
-		message,
 		username,
-		serverName,
-	)
+		message,
+		serverName)
 }
 
-// Update logCommand to use the new format
-func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string, details ...string) {
+// Add helper function to get server name
+func getServerName(s *discordgo.Session, guildID string) string {
+	if guildID == "" {
+		return "DM"
+	}
+	guild, err := s.Guild(guildID)
+	if err != nil {
+		return guildID // Fallback to ID if can't get guild
+	}
+	return guild.Name
+}
+
+// Update logCommand to include optional details
+func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandName string) {
 	var username string
 	if i.Member != nil && i.Member.User != nil {
 		username = i.Member.User.Username
@@ -126,39 +145,26 @@ func logCommand(s *discordgo.Session, i *discordgo.InteractionCreate, commandNam
 		username = i.User.Username
 	}
 
-	// Get server name
-	serverName := "DM"
-	if i.GuildID != "" {
-		if guild, err := s.Guild(i.GuildID); err == nil {
-			serverName = guild.Name
+	serverName := getServerName(s, i.GuildID)
+
+	// Format command options
+	var options []string
+	if i.ApplicationCommandData().Options != nil {
+		for _, opt := range i.ApplicationCommandData().Options {
+			options = append(options, fmt.Sprintf("%s:%v", opt.Name, opt.Value))
 		}
 	}
-
-	// Build command parameters string
-	var params []string
-	if options := i.ApplicationCommandData().Options; len(options) > 0 {
-		for _, opt := range options {
-			switch opt.Type {
-			case discordgo.ApplicationCommandOptionSubCommand:
-				params = append(params, fmt.Sprintf("%s", opt.Name))
-				for _, subOpt := range opt.Options {
-					params = append(params, fmt.Sprintf("%s:%s", subOpt.Name, subOpt.StringValue()))
-				}
-			case discordgo.ApplicationCommandOptionString:
-				params = append(params, fmt.Sprintf("%s:%s", opt.Name, opt.StringValue()))
-			}
-		}
+	optionsStr := ""
+	if len(options) > 0 {
+		optionsStr = " [" + strings.Join(options, ", ") + "]"
 	}
 
-	message := fmt.Sprintf("executed /%s", commandName)
-	if len(params) > 0 {
-		message += fmt.Sprintf(" [%s]", strings.Join(params, ", "))
-	}
-	if len(details) > 0 {
-		message += fmt.Sprintf(" (%s)", strings.Join(details, " "))
-	}
-
-	log.Printf(formatLogMessage(i.GuildID, message, username, serverName))
+	log.Printf(formatLogMessage(
+		i.GuildID,
+		fmt.Sprintf("executed /%s%s", commandName, optionsStr),
+		username,
+		serverName,
+	))
 }
 
 // Update logError to use the new format

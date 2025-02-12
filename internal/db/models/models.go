@@ -40,6 +40,7 @@ type CheckIn struct {
 type CheckInWithTask struct {
 	CheckIn *CheckIn
 	Task    *Task
+	User    *User
 }
 
 type ServerSettings struct {

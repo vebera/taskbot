@@ -1,7 +1,16 @@
 discord:
   token: ${DISCORD_TOKEN}
   client_id: ${DISCORD_CLIENT_ID}
-  permissions: 8
+  permissions: 2147483647  # Full permissions (or use specific ones below)
+  # Alternative specific permissions:
+  # permissions: 277025466368  # Includes:
+  #   - View Channels
+  #   - Send Messages
+  #   - Use Slash Commands
+  #   - Read Message History
+  #   - Add Reactions
+  #   - Embed Links
+  #   - Attach Files
 
 database:
   host: ${DB_HOST}

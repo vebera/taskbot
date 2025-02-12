@@ -16,9 +16,7 @@ import (
 
 var (
 	dmAllowedCommands = map[string]bool{
-		"timezone": true, // Allow timezone setting in DMs
-		"help":     true, // If you have a help command
-		"status":   true, // Allow checking status in DMs
+		"help": true, // Keep only essential commands in DMs
 	}
 )
 
@@ -39,7 +37,7 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
-	// Update intents to include all necessary ones
+	// Update these intents
 	session.Identify.Intents = discordgo.IntentsAllWithoutPrivileged |
 		discordgo.IntentsGuildMembers |
 		discordgo.IntentsGuildPresences |
@@ -47,25 +45,18 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		discordgo.IntentsGuilds |
 		discordgo.IntentsGuildMessages
 
-	// Define required permissions
+	// Required permissions for visibility
 	requiredPermissions := int64(
 		discordgo.PermissionViewChannel |
 			discordgo.PermissionSendMessages |
 			discordgo.PermissionReadMessageHistory |
-			discordgo.PermissionUseSlashCommands |
-			discordgo.PermissionManageRoles)
+			discordgo.PermissionUseSlashCommands)
 
 	config.Discord.Permissions = requiredPermissions
 
 	// Log configuration details
 	log.Printf("Bot intents: %d", session.Identify.Intents)
 	log.Printf("Bot permissions: %d", config.Discord.Permissions)
-
-	// Generate and log invite URL with proper scopes
-	inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%d&scope=bot%%20applications.commands",
-		config.Discord.ClientID,
-		config.Discord.Permissions)
-	log.Printf("Bot invite URL: %s", inviteURL)
 
 	return &Bot{
 		db:         database,
@@ -78,65 +69,79 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 
 // Helper function to register commands for a guild
 func (b *Bot) registerGuildCommands(guildID string) error {
-	// Get guild info for better logging
-	guild, err := b.session.Guild(guildID)
+	maxRetries := 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		err := b.registerGuildCommandsOnce(guildID)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		log.Printf("Attempt %d to register commands failed: %v", i+1, err)
+		time.Sleep(time.Second * time.Duration(i+1))
+	}
+	return fmt.Errorf("failed to register commands after %d attempts: %v", maxRetries, lastErr)
+}
+
+func (b *Bot) registerGuildCommandsOnce(guildID string) error {
+	serverName := getServerName(b.session, guildID)
+
+	log.Printf(formatLogMessage(
+		guildID,
+		"Registering commands",
+		"BOT",
+		serverName,
+	))
+
+	// Clear existing commands
+	existing, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guildID)
 	if err != nil {
-		log.Printf(formatLogMessage(guildID, "Error getting guild info: "+err.Error(), "system", "unknown"))
-		return err
+		return fmt.Errorf("error getting existing commands: %w", err)
 	}
 
-	log.Printf(formatLogMessage(guildID, "Starting command registration", "system", guild.Name))
-
-	// First, clean up existing commands
-	existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guildID)
-	if err != nil {
-		log.Printf(formatLogMessage(guildID, "Error getting existing commands: "+err.Error(), "system", guild.Name))
-	} else {
-		for _, cmd := range existingCommands {
-			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guildID, cmd.ID)
-			if err != nil {
-				log.Printf(formatLogMessage(guildID, "Error removing command: "+cmd.Name, "system", guild.Name))
-			} else {
-				log.Printf(formatLogMessage(guildID, "Successfully removed command: "+cmd.Name, "system", guild.Name))
-			}
+	// Delete all existing commands first
+	for _, v := range existing {
+		err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guildID, v.ID)
+		if err != nil {
+			log.Printf(formatLogMessage(
+				guildID,
+				fmt.Sprintf("%s: Failed to delete command (%v)", v.Name, err),
+				"BOT",
+				serverName,
+			))
+		} else {
+			log.Printf(formatLogMessage(
+				guildID,
+				fmt.Sprintf("%s: Successfully removed command", v.Name),
+				"BOT",
+				serverName,
+			))
 		}
 	}
+
+	// Wait a moment to ensure all deletions are processed
+	time.Sleep(time.Second)
 
 	// Register new commands
-	var registeredCommands []*discordgo.ApplicationCommand
-	for _, cmd := range commands {
-		// Make sure commands are visible to everyone except admin-only commands
-		if cmd.DefaultMemberPermissions == nil || *cmd.DefaultMemberPermissions == 0 {
-			defaultPerms := int64(discordgo.PermissionViewChannel)
-			cmd.DefaultMemberPermissions = &defaultPerms
-		}
-
-		log.Printf(formatLogMessage(guildID, "Registering command: "+cmd.Name, "system", guild.Name))
-		registered, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, cmd)
+	for _, v := range commands {
+		_, err := b.session.ApplicationCommandCreate(b.config.Discord.ClientID, guildID, v)
 		if err != nil {
-			log.Printf(formatLogMessage(guildID, "Error registering command: "+cmd.Name+", error: "+err.Error(), "system", guild.Name))
-			continue
+			return fmt.Errorf("error creating command %s: %w", v.Name, err)
 		}
-		registeredCommands = append(registeredCommands, registered)
-		log.Printf(formatLogMessage(guildID, "Successfully registered command: "+cmd.Name, "system", guild.Name))
+		log.Printf(formatLogMessage(
+			guildID,
+			fmt.Sprintf("%s: Registered command", v.Name),
+			"BOT",
+			serverName,
+		))
 	}
-
-	// Update the bot's command list
-	b.mu.Lock()
-	b.commands = append(b.commands, registeredCommands...)
-	b.mu.Unlock()
 
 	return nil
 }
 
 func (b *Bot) Start(ctx context.Context) error {
 	log.Println("Starting TaskBot...")
-
-	// Print bot invite URL
-	inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%d&scope=bot%%20applications.commands",
-		b.config.Discord.ClientID,
-		b.config.Discord.Permissions)
-	log.Printf("Bot invite URL: %s", inviteURL)
 
 	// Keep trying to connect until successful
 	for {
@@ -164,7 +169,6 @@ func (b *Bot) Start(ctx context.Context) error {
 
 	// Register handlers
 	b.session.AddHandler(b.handleReady)
-	b.session.AddHandler(b.handleGuildCreate)
 	b.session.AddHandler(func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		switch i.Type {
 		case discordgo.InteractionApplicationCommand:
@@ -177,25 +181,13 @@ func (b *Bot) Start(ctx context.Context) error {
 	// Force re-register commands for all guilds
 	log.Println("Force re-registering commands for all guilds...")
 	for _, guild := range b.session.State.Guilds {
-		// First, delete all existing commands
-		existingCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guild.ID)
-		if err != nil {
-			log.Printf("Error getting existing commands for guild %s: %v", guild.ID, err)
-			continue
-		}
-
-		for _, cmd := range existingCommands {
-			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guild.ID, cmd.ID)
-			if err != nil {
-				log.Printf("Error deleting command %s from guild %s: %v", cmd.Name, guild.ID, err)
-			}
-		}
-
-		// Then register commands again
 		if err := b.registerGuildCommands(guild.ID); err != nil {
 			log.Printf("Error registering commands for guild %s: %v", guild.ID, err)
 		}
 	}
+
+	// Now add the guild create handler for future guilds
+	b.session.AddHandler(b.handleGuildCreate)
 
 	log.Println("Bot is now running. Press CTRL-C to exit.")
 
@@ -223,28 +215,25 @@ func (b *Bot) Shutdown() error {
 	b.wg.Wait()
 
 	// Remove commands
-	log.Println("Removing Discord commands...")
+	log.Printf(formatLogMessage("", "Removing Discord commands", "BOT", ""))
+
 	for _, guild := range b.session.State.Guilds {
 		// Get guild info for better logging
-		guildInfo, err := b.session.Guild(guild.ID)
-		guildName := "unknown"
-		if err == nil {
-			guildName = guildInfo.Name
-		}
+		serverName := getServerName(b.session, guild.ID)
 
-		log.Printf("Removing commands from guild: %s (Name: %s)", guild.ID, guildName)
+		log.Printf(formatLogMessage(guild.ID, "Removing commands", "BOT", serverName))
 
 		registeredCommands, err := b.session.ApplicationCommands(b.config.Discord.ClientID, guild.ID)
 		if err != nil {
-			log.Printf("Error getting commands for guild %s (%s): %v", guildName, guild.ID, err)
+			log.Printf(formatLogMessage(guild.ID, fmt.Sprintf("Error getting commands: %v", err), "BOT", serverName))
 			continue
 		}
 		for _, cmd := range registeredCommands {
 			err := b.session.ApplicationCommandDelete(b.config.Discord.ClientID, guild.ID, cmd.ID)
 			if err != nil {
-				log.Printf("Error removing command %s from guild %s (%s): %v", cmd.Name, guildName, guild.ID, err)
+				log.Printf(formatLogMessage(guild.ID, fmt.Sprintf("%s: Failed to remove command (%v)", cmd.Name, err), "BOT", serverName))
 			} else {
-				log.Printf("Successfully removed command %s from guild %s (%s)", cmd.Name, guildName, guild.ID)
+				log.Printf(formatLogMessage(guild.ID, fmt.Sprintf("%s: Successfully removed command", cmd.Name), "BOT", serverName))
 			}
 		}
 	}
@@ -276,20 +265,20 @@ func (b *Bot) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 }
 
 func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
-	log.Printf("Bot joined new guild: %s (Name: %s)", g.ID, g.Name)
+	log.Printf(formatLogMessage(g.ID, "Bot joined new guild", "BOT", g.Name))
 
 	// Initialize settings for new guild
 	if _, err := b.db.GetOrCreateServerSettings(g.ID); err != nil {
-		log.Printf("Error initializing settings for guild %s (%s): %v", g.Name, g.ID, err)
+		log.Printf(formatLogMessage(g.ID, fmt.Sprintf("Error initializing settings: %v", err), "BOT", g.Name))
 	} else {
-		log.Printf("Successfully initialized settings for guild %s (%s)", g.Name, g.ID)
+		log.Printf(formatLogMessage(g.ID, "Successfully initialized settings", "BOT", g.Name))
 	}
 
 	// Register commands for the new guild
 	if err := b.registerGuildCommands(g.ID); err != nil {
-		log.Printf("Error registering commands for guild %s (%s): %v", g.Name, g.ID, err)
+		log.Printf(formatLogMessage(g.ID, fmt.Sprintf("Error registering commands: %v", err), "BOT", g.Name))
 	} else {
-		log.Printf("Successfully registered all commands for guild %s (%s)", g.Name, g.ID)
+		log.Printf(formatLogMessage(g.ID, "Successfully registered all commands", "BOT", g.Name))
 	}
 }
 
@@ -326,9 +315,21 @@ func (b *Bot) handleCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// Check if command is allowed in current context
 	commandName := i.ApplicationCommandData().Name
-	if i.GuildID == "" && !dmAllowedCommands[commandName] {
-		respondWithError(s, i, fmt.Sprintf("The `/%s` command can only be used in a server", commandName))
-		return
+
+	// Strict DM check
+	if i.GuildID == "" {
+		if !dmAllowedCommands[commandName] {
+			respondWithError(s, i, fmt.Sprintf("The `/%s` command can only be used in a server", commandName))
+			return
+		}
+	}
+
+	// Add guild-specific permission check
+	if i.GuildID != "" {
+		if !hasPermission(s, i.GuildID, i.Member.User.ID, discordgo.PermissionViewChannel) {
+			respondWithError(s, i, "You don't have permission to use this command here")
+			return
+		}
 	}
 
 	// Add initial acknowledgment for long-running commands

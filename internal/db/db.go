@@ -174,25 +174,28 @@ func (db *DB) GetTaskByID(taskID uuid.UUID) (*models.Task, error) {
 func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			c.id,
-			u.id,
-			c.server_id,
-			c.task_id,
-			COALESCE(c.start_time, NOW()),
-			c.end_time,
-			t.name,
-			t.description,
-			u.username
+			u.id as user_id, u.username,
+			COALESCE(c.id, '00000000-0000-0000-0000-000000000000') as check_in_id,
+			COALESCE(c.server_id, $1) as server_id,
+			COALESCE(c.task_id, '00000000-0000-0000-0000-000000000000') as task_id,
+			COALESCE(c.start_time, NOW()) as start_time,
+			COALESCE(c.end_time, NULL) as end_time,
+			COALESCE(t.name, 'No active task') as task_name,
+			COALESCE(t.description, '') as task_description,
+			COALESCE(t.global, false) as task_global,
+			COALESCE(t.completed, false) as task_completed
 		FROM users u
-		LEFT JOIN check_ins c ON u.id = c.user_id AND c.active = true AND c.server_id = $1
+		LEFT JOIN check_ins c ON u.id = c.user_id 
+			AND c.server_id = $1 
+			AND c.end_time IS NULL
 		LEFT JOIN tasks t ON c.task_id = t.id
 		WHERE EXISTS (
-			SELECT 1 
-			FROM check_ins ci 
+			SELECT 1 FROM check_ins ci 
 			WHERE ci.user_id = u.id 
 			AND ci.server_id = $1
 		)
-		ORDER BY u.username ASC`
+		ORDER BY u.username ASC
+	`
 
 	rows, err := db.Query(context.Background(), query, serverID)
 	if err != nil {
@@ -205,72 +208,28 @@ func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, 
 		ci := &models.CheckInWithTask{
 			CheckIn: &models.CheckIn{},
 			Task:    &models.Task{},
+			User:    &models.User{},
 		}
-		var (
-			checkInID, userID, serverIDScan sql.NullString
-			taskID                          sql.NullString
-			startTime                       sql.NullTime
-			endTime                         sql.NullTime
-			taskName, taskDesc              sql.NullString
-			username                        string
-		)
 
 		err := rows.Scan(
-			&checkInID,
-			&userID,
-			&serverIDScan,
-			&taskID,
-			&startTime,
-			&endTime,
-			&taskName,
-			&taskDesc,
-			&username,
+			&ci.User.ID,
+			&ci.User.Username,
+			&ci.CheckIn.ID,
+			&ci.CheckIn.ServerID,
+			&ci.CheckIn.TaskID,
+			&ci.CheckIn.StartTime,
+			&ci.CheckIn.EndTime,
+			&ci.Task.Name,
+			&ci.Task.Description,
+			&ci.Task.Global,
+			&ci.Task.Completed,
 		)
 		if err != nil {
 			return nil, err
 		}
-
-		// Set check-in details
-		if checkInID.Valid && checkInID.String != "" {
-			ci.CheckIn.ID, err = uuid.Parse(checkInID.String)
-			if err != nil {
-				return nil, fmt.Errorf("invalid check-in ID: %w", err)
-			}
-		}
-		if userID.Valid && userID.String != "" {
-			ci.CheckIn.UserID, err = uuid.Parse(userID.String)
-			if err != nil {
-				return nil, fmt.Errorf("invalid user ID: %w", err)
-			}
-		}
-		if serverIDScan.Valid {
-			ci.CheckIn.ServerID = serverIDScan.String
-		}
-		if taskID.Valid && taskID.String != "" {
-			ci.CheckIn.TaskID, err = uuid.Parse(taskID.String)
-			if err != nil {
-				return nil, fmt.Errorf("invalid task ID: %w", err)
-			}
-		}
-		if startTime.Valid {
-			ci.CheckIn.StartTime = startTime.Time
-		}
-		if endTime.Valid {
-			ci.CheckIn.EndTime = &endTime.Time
-		}
-
-		// Set task details
-		if taskName.Valid {
-			ci.Task.Name = taskName.String
-		} else {
-			ci.Task.Name = "Not checked in"
-		}
-		if taskDesc.Valid {
-			ci.Task.Description = taskDesc.String
-		}
-
 		checkIns = append(checkIns, ci)
 	}
+
 	return checkIns, rows.Err()
 }
 
@@ -318,18 +277,32 @@ func (db *DB) GetTaskHistory(userID uuid.UUID, startDate, endDate time.Time) ([]
 }
 
 // GetAllTaskHistory retrieves completed check-ins for all users within a date range for a server
-func (db *DB) GetAllTaskHistory(serverID string, startDate, endDate time.Time) ([]*models.CheckInWithTask, error) {
+func (db *DB) GetAllTaskHistory(serverID string, startDate time.Time, endDate time.Time) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			c.id, c.user_id, c.task_id, c.start_time, c.end_time,
-			t.name, t.description
-		FROM check_ins c
-		JOIN tasks t ON c.task_id = t.id
-		WHERE c.server_id = $1 
-		AND c.start_time >= $2 
-		AND c.start_time < $3
-		AND c.end_time IS NOT NULL
-		ORDER BY c.start_time DESC`
+			u.id as user_id, u.username,
+			COALESCE(c.id, '00000000-0000-0000-0000-000000000000') as check_in_id,
+			COALESCE(c.server_id, $1) as server_id,
+			COALESCE(c.task_id, '00000000-0000-0000-0000-000000000000') as task_id,
+			COALESCE(c.start_time, NOW()) as start_time,
+			COALESCE(c.end_time, NULL) as end_time,
+			COALESCE(t.name, 'No tasks in period') as task_name,
+			COALESCE(t.description, '') as task_description,
+			COALESCE(t.global, false) as task_global,
+			COALESCE(t.completed, false) as task_completed
+		FROM users u
+		LEFT JOIN check_ins c ON u.id = c.user_id 
+			AND c.server_id = $1
+			AND c.start_time >= $2
+			AND (c.end_time <= $3 OR c.end_time IS NULL)
+		LEFT JOIN tasks t ON c.task_id = t.id
+		WHERE EXISTS (
+			SELECT 1 FROM check_ins ci 
+			WHERE ci.user_id = u.id 
+			AND ci.server_id = $1
+		)
+		ORDER BY u.username ASC, c.start_time DESC
+	`
 
 	rows, err := db.Query(context.Background(), query, serverID, startDate, endDate)
 	if err != nil {
@@ -342,23 +315,28 @@ func (db *DB) GetAllTaskHistory(serverID string, startDate, endDate time.Time) (
 		ci := &models.CheckInWithTask{
 			CheckIn: &models.CheckIn{},
 			Task:    &models.Task{},
+			User:    &models.User{},
 		}
-		var endTime time.Time
+
 		err := rows.Scan(
+			&ci.User.ID,
+			&ci.User.Username,
 			&ci.CheckIn.ID,
-			&ci.CheckIn.UserID,
+			&ci.CheckIn.ServerID,
 			&ci.CheckIn.TaskID,
 			&ci.CheckIn.StartTime,
-			&endTime,
+			&ci.CheckIn.EndTime,
 			&ci.Task.Name,
 			&ci.Task.Description,
+			&ci.Task.Global,
+			&ci.Task.Completed,
 		)
 		if err != nil {
 			return nil, err
 		}
-		ci.CheckIn.EndTime = &endTime
 		checkIns = append(checkIns, ci)
 	}
+
 	return checkIns, rows.Err()
 }
 

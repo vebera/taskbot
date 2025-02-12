@@ -491,7 +491,7 @@ func (b *Bot) handleCheckin(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	}
 
-	logCommand(s, i, "checkin", task.Name)
+	logCommand(s, i, "checkin")
 
 	// Check for active check-in
 	activeCheckIn, err := b.db.GetActiveCheckIn(user.ID, i.GuildID)
@@ -578,49 +578,59 @@ func (b *Bot) handleCheckout(s *discordgo.Session, i *discordgo.InteractionCreat
 func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	logCommand(s, i, "status")
 
-	// Get all active check-ins for THIS guild only
+	// Get all active check-ins for this server
 	activeCheckIns, err := b.db.GetAllActiveCheckIns(i.GuildID)
 	if err != nil {
 		respondWithError(s, i, "Error retrieving active check-ins: "+err.Error())
 		return
 	}
 
+	// Get all users in this guild
+	allUsers, err := b.db.GetGuildUsers(i.GuildID)
+	if err != nil {
+		respondWithError(s, i, "Error retrieving users: "+err.Error())
+		return
+	}
+
+	// Create a map for quick lookup and to track which users have been processed
+	userMap := make(map[uuid.UUID]*models.User)
+	for _, user := range allUsers {
+		userMap[user.ID] = user
+	}
+
+	// Build the status message
 	var response strings.Builder
 	response.WriteString("# Current Status\n\n")
 	response.WriteString("```\n")
-	response.WriteString(fmt.Sprintf("%-2s %-20s %-30s %-15s\n", "", "USER", "TASK", "TIME"))
-	response.WriteString(strings.Repeat("-", 70) + "\n")
+	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n", "USER", "TASK", "TIME"))
+	response.WriteString(strings.Repeat("-", 79) + "\n")
 
+	// First, add all active users
 	for _, ci := range activeCheckIns {
-		user, err := b.db.GetUserByID(ci.CheckIn.UserID)
-		if err != nil {
+		duration := time.Since(ci.CheckIn.StartTime)
+		user, exists := userMap[ci.CheckIn.UserID]
+		if !exists {
 			continue
 		}
-
-		var (
-			statusIcon string
-			duration   string
-		)
-
-		if ci.Task.Name == "Not checked in" {
-			statusIcon = "⚫" // Grey circle for not checked in
-			duration = "-"
-		} else {
-			statusIcon = "🟢" // Green circle for active
-			duration = formatDuration(time.Since(ci.CheckIn.StartTime))
-		}
-
-		response.WriteString(fmt.Sprintf("%-2s %-20s %-30s %-15s\n",
-			statusIcon,
+		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
 			truncateString(user.Username, 20),
 			truncateString(ci.Task.Name, 30),
-			duration,
+			formatDuration(duration),
+		))
+		// Remove from userMap as we've processed this user
+		delete(userMap, ci.CheckIn.UserID)
+	}
+
+	// Then add all inactive users
+	for _, user := range userMap {
+		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
+			truncateString(user.Username, 20),
+			"No active task",
+			"-",
 		))
 	}
 
-	response.WriteString("```\n")
-	response.WriteString("\n🟢 Active  ⚫ Not checked in")
-
+	response.WriteString("```")
 	respondWithSuccess(s, i, response.String())
 }
 
@@ -653,7 +663,7 @@ func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
 		return
 	}
 
-	logCommand(s, i, "task", fmt.Sprintf("task: %s, status: %s"))
+	logCommand(s, i, "task")
 
 	// Check if user is admin or task owner
 	isUserAdmin := isAdmin(s, i.GuildID, i.Member.User.ID)
@@ -759,7 +769,7 @@ func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCre
 		CreatedAt:   time.Now(),
 	}
 
-	logCommand(s, i, "globaltask", fmt.Sprintf("name: %s", taskName))
+	logCommand(s, i, "globaltask")
 
 	if err := b.db.CreateTask(task); err != nil {
 		logError(s, i.ChannelID, "CreateTask", err.Error())
@@ -820,9 +830,19 @@ func (b *Bot) handleDeclare(s *discordgo.Session, i *discordgo.InteractionCreate
 
 	// Log command with warning if over 8 hours
 	if duration > 8*time.Hour {
-		logCommand(s, i, "declare", fmt.Sprintf("⚠️ OVER 8 HOURS: %s on task: %s", formatDuration(duration), task.Name))
+		log.Printf(formatLogMessage(
+			i.GuildID,
+			fmt.Sprintf("executed /declare [WARNING: OVER 8 HOURS: %s on task: %s]", formatDuration(duration), task.Name),
+			user.Username,
+			getServerName(s, i.GuildID),
+		))
 	} else {
-		logCommand(s, i, "declare", fmt.Sprintf("%s on task: %s", formatDuration(duration), task.Name))
+		log.Printf(formatLogMessage(
+			i.GuildID,
+			fmt.Sprintf("executed /declare [%s on task: %s]", formatDuration(duration), task.Name),
+			user.Username,
+			getServerName(s, i.GuildID),
+		))
 	}
 
 	// Create check-in record with end time
@@ -908,7 +928,7 @@ func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
 
 			// Check if user is the guild owner
 			if g.OwnerID == userID {
-				log.Printf("User %s is the owner of guild %s", userID, guild.ID)
+				log.Printf(formatLogMessage(guild.ID, "User is the guild owner", userID, guild.Name))
 				return true
 			}
 
@@ -917,6 +937,7 @@ func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
 				for _, role := range g.Roles {
 					if role.ID == roleID {
 						if role.Permissions&discordgo.PermissionAdministrator != 0 || role.Permissions&discordgo.PermissionManageServer != 0 {
+							log.Printf(formatLogMessage(guild.ID, "User has admin permissions", userID, guild.Name))
 							return true
 						}
 						break
@@ -943,7 +964,7 @@ func isAdmin(s *discordgo.Session, guildID string, userID string) bool {
 
 	// First check if user is the guild owner
 	if guild.OwnerID == userID {
-		log.Printf("User %s is the owner of guild %s", userID, guildID)
+		log.Printf(formatLogMessage(guildID, "User is the guild owner", userID, guild.Name))
 		return true
 	}
 
