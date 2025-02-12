@@ -37,7 +37,7 @@ func New(config *config.Config, database *db.DB) (*Bot, error) {
 		return nil, fmt.Errorf("error creating Discord session: %w", err)
 	}
 
-	// Update these intents
+	// Update these intents to include GuildMembers
 	session.Identify.Intents = discordgo.IntentsAllWithoutPrivileged |
 		discordgo.IntentsGuildMembers |
 		discordgo.IntentsGuildPresences |
@@ -267,18 +267,28 @@ func (b *Bot) handleReady(s *discordgo.Session, r *discordgo.Ready) {
 func (b *Bot) handleGuildCreate(s *discordgo.Session, g *discordgo.GuildCreate) {
 	log.Printf(formatLogMessage(g.ID, "Bot joined new guild", "BOT", g.Name))
 
-	// Initialize settings for new guild
-	if _, err := b.db.GetOrCreateServerSettings(g.ID); err != nil {
-		log.Printf(formatLogMessage(g.ID, fmt.Sprintf("Error initializing settings: %v", err), "BOT", g.Name))
-	} else {
-		log.Printf(formatLogMessage(g.ID, "Successfully initialized settings", "BOT", g.Name))
+	// Get all members using the Discord API
+	members, err := s.GuildMembers(g.ID, "", 1000) // Get up to 1000 members
+	if err != nil {
+		log.Printf("Error getting guild members: %v", err)
+		return
+	}
+
+	// Process each member
+	for _, member := range members {
+		if member.User != nil {
+			user, err := b.db.GetOrCreateUser(member.User.ID, member.User.Username)
+			if err != nil {
+				log.Printf("Error processing user %s: %v", member.User.Username, err)
+				continue
+			}
+			log.Printf("Processed user: %s (ID: %s)", user.Username, user.ID)
+		}
 	}
 
 	// Register commands for the new guild
 	if err := b.registerGuildCommands(g.ID); err != nil {
 		log.Printf(formatLogMessage(g.ID, fmt.Sprintf("Error registering commands: %v", err), "BOT", g.Name))
-	} else {
-		log.Printf(formatLogMessage(g.ID, "Successfully registered all commands", "BOT", g.Name))
 	}
 }
 

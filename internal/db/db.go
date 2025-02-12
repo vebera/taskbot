@@ -625,14 +625,9 @@ func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 	query := `
 		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
 		FROM users u
-		WHERE EXISTS (
-			SELECT 1 FROM check_ins ci
-			WHERE ci.user_id = u.id
-			AND ci.server_id = $1
-		)
 		ORDER BY u.username ASC`
 
-	rows, err := db.Query(context.Background(), query, guildID)
+	rows, err := db.Query(context.Background(), query)
 	if err != nil {
 		return nil, fmt.Errorf("error getting guild users: %w", err)
 	}
@@ -654,9 +649,16 @@ func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 		users = append(users, user)
 	}
 
-	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating users: %w", err)
-	}
-
 	return users, nil
+}
+
+// Add function to track guild membership
+func (db *DB) AddUserToGuild(userID uuid.UUID, guildID string) error {
+	query := `
+		INSERT INTO guild_users (user_id, guild_id)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id, guild_id) DO NOTHING`
+
+	_, err := db.Exec(context.Background(), query, userID, guildID)
+	return err
 }

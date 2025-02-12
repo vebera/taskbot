@@ -44,6 +44,7 @@ func main() {
 		"migrations/001_initial_schema.sql",
 		"migrations/002_add_active_status.sql",
 		"migrations/003_add_server_id.sql",
+		"migrations/004_add_guild_users.sql",
 	}
 
 	for _, migrationFile := range migrations {
