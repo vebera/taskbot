@@ -170,67 +170,51 @@ func (db *DB) GetTaskByID(taskID uuid.UUID) (*models.Task, error) {
 	return task, err
 }
 
-// GetAllActiveCheckIns retrieves all active check-ins with associated tasks for a server
-func (db *DB) GetAllActiveCheckIns(serverID string) ([]*models.CheckInWithTask, error) {
+// GetAllActiveCheckIns returns all active check-ins for a server
+func (db *DB) GetAllActiveCheckIns(guildID string) ([]*models.CheckInWithTask, error) {
 	query := `
 		SELECT 
-			u.id as user_id, u.username,
-			COALESCE(c.id, '00000000-0000-0000-0000-000000000000') as check_in_id,
-			COALESCE(c.server_id, $1) as server_id,
-			COALESCE(c.task_id, '00000000-0000-0000-0000-000000000000') as task_id,
-			COALESCE(c.start_time, NOW()) as start_time,
-			COALESCE(c.end_time, NULL) as end_time,
-			COALESCE(t.name, 'No active task') as task_name,
-			COALESCE(t.description, '') as task_description,
-			COALESCE(t.global, false) as task_global,
-			COALESCE(t.completed, false) as task_completed
-		FROM users u
-		LEFT JOIN check_ins c ON u.id = c.user_id 
-			AND c.server_id = $1 
-			AND c.end_time IS NULL
-		LEFT JOIN tasks t ON c.task_id = t.id
-		WHERE EXISTS (
-			SELECT 1 FROM check_ins ci 
-			WHERE ci.user_id = u.id 
-			AND ci.server_id = $1
-		)
-		ORDER BY u.username ASC
-	`
+			ci.id, ci.user_id, ci.server_id, ci.task_id, ci.start_time, ci.end_time, ci.active,
+			t.id, t.user_id, t.server_id, t.name, t.description, t.tags, t.completed, t.global, t.created_at,
+			u.id, u.discord_id, u.username, u.timezone, u.created_at
+		FROM check_ins ci
+		JOIN tasks t ON ci.task_id = t.id
+		JOIN users u ON ci.user_id = u.id
+		WHERE ci.server_id = $1 
+		AND ci.active = true 
+		AND ci.end_time IS NULL`
 
-	rows, err := db.Query(context.Background(), query, serverID)
+	rows, err := db.Query(context.Background(), query, guildID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error getting active check-ins: %w", err)
 	}
 	defer rows.Close()
 
 	var checkIns []*models.CheckInWithTask
 	for rows.Next() {
-		ci := &models.CheckInWithTask{
-			CheckIn: &models.CheckIn{},
-			Task:    &models.Task{},
-			User:    &models.User{},
-		}
+		checkIn := &models.CheckIn{}
+		task := &models.Task{}
+		user := &models.User{}
 
 		err := rows.Scan(
-			&ci.User.ID,
-			&ci.User.Username,
-			&ci.CheckIn.ID,
-			&ci.CheckIn.ServerID,
-			&ci.CheckIn.TaskID,
-			&ci.CheckIn.StartTime,
-			&ci.CheckIn.EndTime,
-			&ci.Task.Name,
-			&ci.Task.Description,
-			&ci.Task.Global,
-			&ci.Task.Completed,
+			&checkIn.ID, &checkIn.UserID, &checkIn.ServerID, &checkIn.TaskID,
+			&checkIn.StartTime, &checkIn.EndTime, &checkIn.Active,
+			&task.ID, &task.UserID, &task.ServerID, &task.Name, &task.Description,
+			&task.Tags, &task.Completed, &task.Global, &task.CreatedAt,
+			&user.ID, &user.DiscordID, &user.Username, &user.Timezone, &user.CreatedAt,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error scanning check-in: %w", err)
 		}
-		checkIns = append(checkIns, ci)
+
+		checkIns = append(checkIns, &models.CheckInWithTask{
+			CheckIn: checkIn,
+			Task:    task,
+			User:    user,
+		})
 	}
 
-	return checkIns, rows.Err()
+	return checkIns, nil
 }
 
 // GetTaskHistory retrieves completed check-ins for a user within a date range

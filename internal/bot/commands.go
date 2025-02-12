@@ -600,38 +600,44 @@ func (b *Bot) handleStatus(s *discordgo.Session, i *discordgo.InteractionCreate)
 
 	// Build the status message
 	var response strings.Builder
-	response.WriteString("# Current Status\n\n")
-	response.WriteString("```\n")
+	response.WriteString("Current Status\n\n")
 	response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n", "USER", "TASK", "TIME"))
-	response.WriteString(strings.Repeat("-", 79) + "\n")
+	response.WriteString(strings.Repeat("-", 65) + "\n")
 
 	// First, add all active users
-	for _, ci := range activeCheckIns {
-		duration := time.Since(ci.CheckIn.StartTime)
-		user, exists := userMap[ci.CheckIn.UserID]
-		if !exists {
+	processedUsers := make(map[uuid.UUID]bool)
+	for _, checkIn := range activeCheckIns {
+		user := userMap[checkIn.CheckIn.UserID]
+		if user == nil {
 			continue
 		}
-		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
-			truncateString(user.Username, 20),
-			truncateString(ci.Task.Name, 30),
+		processedUsers[user.ID] = true
+
+		task, err := b.db.GetTaskByID(checkIn.CheckIn.TaskID)
+		if err != nil {
+			continue
+		}
+
+		duration := time.Since(checkIn.CheckIn.StartTime)
+		response.WriteString(fmt.Sprintf("● %-18s %-30s %-15s\n",
+			truncateString(user.Username, 18),
+			truncateString(task.Name, 30),
 			formatDuration(duration),
 		))
-		// Remove from userMap as we've processed this user
-		delete(userMap, ci.CheckIn.UserID)
 	}
 
 	// Then add all inactive users
-	for _, user := range userMap {
-		response.WriteString(fmt.Sprintf("%-20s %-30s %-15s\n",
-			truncateString(user.Username, 20),
-			"No active task",
-			"-",
-		))
+	for _, user := range allUsers {
+		if !processedUsers[user.ID] {
+			response.WriteString(fmt.Sprintf("○ %-18s %-30s %-15s\n",
+				truncateString(user.Username, 18),
+				"Not checked in",
+				"-",
+			))
+		}
 	}
 
-	response.WriteString("```")
-	respondWithSuccess(s, i, response.String())
+	respondWithSuccess(s, i, "```\n"+response.String()+"```")
 }
 
 func (b *Bot) handleTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
@@ -719,7 +725,7 @@ func (b *Bot) handleTimezone(s *discordgo.Session, i *discordgo.InteractionCreat
 	// Validate timezone
 	_, err := time.LoadLocation(timezone)
 	if err != nil {
-		respondWithError(s, i, "Invalid timezone. Please use IANA timezone names (e.g., America/New_York, Europe/London)")
+		respondWithError(s, i, "Invalid timezone. Please use a valid timezone like 'America/New_York' or 'Europe/London'")
 		return
 	}
 
@@ -735,12 +741,7 @@ func (b *Bot) handleTimezone(s *discordgo.Session, i *discordgo.InteractionCreat
 		return
 	}
 
-	s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
-		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{
-			Content: fmt.Sprintf("Timezone updated to %s", timezone),
-		},
-	})
+	respondWithSuccess(s, i, fmt.Sprintf("Timezone updated to %s", timezone))
 }
 
 func (b *Bot) handleGlobalTask(s *discordgo.Session, i *discordgo.InteractionCreate) {
