@@ -620,18 +620,21 @@ func (db *DB) UpdateTaskStatus(taskID uuid.UUID, completed bool) error {
 	return nil
 }
 
-// GetGuildUsers returns all users who have activity in the specified guild
+// GetGuildUsers returns all users from the specified guild
 func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 	query := `
 		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
 		FROM users u
-		JOIN check_ins ci ON u.id = ci.user_id
-		WHERE ci.server_id = $1
+		WHERE EXISTS (
+			SELECT 1 FROM guild_users gu
+			WHERE gu.user_id = u.id
+			AND gu.guild_id = $1
+		)
 		ORDER BY u.username ASC`
 
 	rows, err := db.Query(context.Background(), query, guildID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error querying users: %w", err)
 	}
 	defer rows.Close()
 
@@ -646,13 +649,9 @@ func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 			&user.CreatedAt,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error scanning user: %w", err)
 		}
 		users = append(users, user)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, err
 	}
 
 	return users, nil
