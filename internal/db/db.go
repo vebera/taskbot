@@ -626,15 +626,15 @@ func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 		SELECT DISTINCT u.id, u.discord_id, u.username, u.timezone, u.created_at
 		FROM users u
 		WHERE EXISTS (
-			SELECT 1 FROM guild_users gu
-			WHERE gu.user_id = u.id
-			AND gu.guild_id = $1
+			SELECT 1 FROM check_ins ci
+			WHERE ci.user_id = u.id
+			AND ci.server_id = $1
 		)
 		ORDER BY u.username ASC`
 
 	rows, err := db.Query(context.Background(), query, guildID)
 	if err != nil {
-		return nil, fmt.Errorf("error querying users: %w", err)
+		return nil, fmt.Errorf("error getting guild users: %w", err)
 	}
 	defer rows.Close()
 
@@ -652,6 +652,10 @@ func (db *DB) GetGuildUsers(guildID string) ([]*models.User, error) {
 			return nil, fmt.Errorf("error scanning user: %w", err)
 		}
 		users = append(users, user)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating users: %w", err)
 	}
 
 	return users, nil
